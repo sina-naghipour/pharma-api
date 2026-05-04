@@ -29,24 +29,28 @@ class CartItemSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'unit_price', 'total_price']
     
     def get_product_details(self, obj):
-        """Get simplified product details"""
+        """Get simplified product details with primary image URL"""
+        request = self.context.get('request')
+        product = obj.product
+        
+        # Get primary image absolute URL
+        primary_image = None
+        primary_img_obj = product.images.filter(is_primary=True).first()
+        if primary_img_obj and request:
+            primary_image = request.build_absolute_uri(primary_img_obj.image.url)
+        elif product.images.first() and request:
+            # fallback to first image if no primary is set
+            primary_image = request.build_absolute_uri(product.images.first().image.url)
+        
         return {
-            'id': obj.product.id,
-            'name': obj.product.name,
-            'slug': obj.product.slug,
-            'image': self._get_product_image(obj.product),
-            'in_stock': obj.product.in_stock,
-            'prescription_required': obj.product.prescription_required,
+            'id': product.id,
+            'name': product.name,
+            'slug': product.slug,
+            'primary_image': primary_image,
+            'in_stock': product.in_stock,
+            'prescription_required': product.prescription_required,
             'variant_name': obj.variant.name if obj.variant else None
         }
-    
-    def _get_product_image(self, product):
-        """Get primary product image URL"""
-        request = self.context.get('request')
-        primary_image = product.images.filter(is_primary=True).first()
-        if primary_image and request:
-            return request.build_absolute_uri(primary_image.image.url)
-        return None
     
     def validate(self, data):
         """Validate cart item data"""
