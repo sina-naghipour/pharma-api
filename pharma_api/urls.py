@@ -39,6 +39,7 @@ urlpatterns = [
     path(f'api/{API_VERSION}/payments/', include('payments.urls', namespace='payments')),
     path(f'api/{API_VERSION}/promotions/', include('promotions.urls', namespace='promotions')),
     path(f'api/{API_VERSION}/reviews/', include('reviews.urls', namespace='reviews')),
+    path('api/v1/blog/', include('blog.urls', namespace='blog')),
     path(f'api/{API_VERSION}/support/', include('support.urls', namespace='support')),
     
     path('docs/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
