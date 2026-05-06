@@ -404,7 +404,7 @@ class CreateOrderSerializer(serializers.Serializer):
                 payment_method=payment_method,
                 subtotal=cart.subtotal,
                 discount_amount=cart.discount_amount,
-                total=cart.total,
+                total_amount=cart.total,          # ✅ fixed field name
                 customer_notes=customer_notes,
                 prescription_file=cart.prescription_file,
                 prescription_verified=cart.prescription_verified
@@ -424,10 +424,7 @@ class CreateOrderSerializer(serializers.Serializer):
                 else:
                     unit_price = cart_item.product.price
                 
-                # Calculate item totals
-                subtotal = unit_price * cart_item.quantity
-                
-                # Create order item
+                # Create order item (compute totals inline, avoid variable)
                 OrderItem.objects.create(
                     order=order,
                     product=cart_item.product,
@@ -437,8 +434,8 @@ class CreateOrderSerializer(serializers.Serializer):
                     sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
                     quantity=cart_item.quantity,
                     unit_price=unit_price,
-                    subtotal=subtotal,
-                    total=subtotal,  # No discounts applied at item level yet
+                    subtotal=unit_price * cart_item.quantity,
+                    total_price=unit_price * cart_item.quantity,   # ✅ fixed: total_price
                     requires_prescription=cart_item.product.prescription_required == 'required'
                 )
                 
@@ -454,36 +451,36 @@ class CreateOrderSerializer(serializers.Serializer):
             # Deactivate cart
             cart.is_active = False
             cart.save(update_fields=['is_active'])
-            
-            # Create payment record for online payments
-            if payment_method == Order.PAYMENT_ONLINE:
-                Payment.objects.create(
-                    order=order,
-                    amount=order.total,
-                    method=Payment.METHOD_CREDIT_CARD,
-                    status=Payment.STATUS_PENDING
-                )
-            elif payment_method == Order.PAYMENT_COD:
-                Payment.objects.create(
-                    order=order,
-                    amount=order.total,
-                    method=Payment.METHOD_COD,
-                    status=Payment.STATUS_PENDING
-                )
+            # TODO payment later.
+            # # Create payment record for online payments
+            # if payment_method == Order.PAYMENT_ONLINE:
+            #     Payment.objects.create(
+            #         order=order,
+            #         amount=order.total_amount,
+            #         method='online',      # adjust to your actual choice value
+            #         status='pending'
+            #     )
+            # elif payment_method == Order.PAYMENT_COD:
+            #     Payment.objects.create(
+            #         order=order,
+            #         amount=order.total_amount,
+            #         method='cod',         # adjust to your actual choice value
+            #         status='pending'
+            #     )
             
             return order
-    
+        
     def _address_to_json(self, address):
         """Convert address model to JSON representation"""
         return {
-            'recipient_name': address.recipient_name,
-            'recipient_phone': address.recipient_phone,
-            'province': address.province,
+            'recipient_name': f"{address.first_name} {address.last_name}".strip(),
+            'recipient_phone': address.phone_number,
+            'province': address.state_province,
             'city': address.city,
-            'district': address.district,
-            'street_address': address.street_address,
+            'district': address.address_line_2 or '',
+            'street_address': address.address_line_1,
             'postal_code': address.postal_code,
-            'type': address.type
+            'type': address.address_type
         }
 
 

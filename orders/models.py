@@ -46,6 +46,7 @@ class Cart(models.Model):
     )
     
     # Prescription
+        # Prescription
     prescription_file = models.FileField(
         _('Prescription File'),
         upload_to='prescriptions/%Y/%m/',
@@ -53,6 +54,15 @@ class Cart(models.Model):
         blank=True
     )
     prescription_verified = models.BooleanField(_('Prescription Verified'), default=False)
+    prescription_verified_at = models.DateTimeField(_('Prescription Verified At'), null=True, blank=True)
+    prescription_verified_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='verified_order_prescriptions',
+        verbose_name=_('Verified By')
+    )
     
     # Coupon
     coupon = models.ForeignKey(

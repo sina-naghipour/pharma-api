@@ -110,18 +110,16 @@ class Coupon(models.Model):
     
     @property
     def is_valid(self):
-        """Check if coupon is valid based on dates and status"""
         now = timezone.now()
         return (
             self.is_active and
-            self.valid_from <= now and
+            (self.valid_from is None or self.valid_from <= now) and
             (self.valid_until is None or now <= self.valid_until)
         )
     
     @property
     def is_expired(self):
-        """Check if coupon is expired"""
-        return self.valid_until and timezone.now() > self.valid_until
+        return self.valid_until is not None and self.valid_until < timezone.now()
     
     @property
     def is_fully_redeemed(self):

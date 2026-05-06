@@ -1,8 +1,6 @@
-# orders/admin.py
 from django.contrib import admin
 from django.utils.html import format_html
-from django.urls import reverse
-from django.utils.safestring import mark_safe
+from django.utils import timezone
 from .models import (
     Cart, CartItem, Order, OrderItem, Shipment, ShipmentItem, Refund, RefundItem
 )
@@ -72,73 +70,73 @@ class OrderItemInline(admin.TabularInline):
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
     list_display = [
-        'order_number', 'user', 'status', 'total_amount', 
-        'payment_method', 'created_at'
+        'order_number', 'user', 'status', 'prescription_status',
+        'total_amount', 'payment_method', 'created_at'
     ]
     list_filter = [
         'status', 'payment_method', 'created_at', 'updated_at',
-        'prescription_verified'
+        'prescription_verified'  # removed 'prescription_verified_at'
     ]
     search_fields = [
-        'order_number', 'user__email', 'user__first_name', 
+        'order_number', 'user__email', 'user__first_name',
         'user__last_name', 'payment_id'
     ]
     readonly_fields = [
         'id', 'order_number', 'created_at', 'updated_at',
-        'paid_at', 'shipped_at', 'delivered_at', 'cancelled_at'
+        'paid_at', 'shipped_at', 'delivered_at', 'cancelled_at',
+        'prescription_file_link'   # removed 'prescription_verified_at/_by'
     ]
     inlines = [OrderItemInline]
     raw_id_fields = ['user']
     date_hierarchy = 'created_at'
-    
+
     fieldsets = (
-        ('Order Information', {
-            'fields': ('id', 'order_number', 'user', 'status')
-        }),
-        ('Payment Details', {
-            'fields': ('payment_method', 'payment_id')
-        }),
-        ('Addresses', {
-            'fields': ('shipping_address', 'billing_address')
-        }),
-        ('Order Amounts', {
-            'fields': (
-                'subtotal', 'shipping_cost', 'tax_amount', 
-                'discount_amount', 'total_amount'
-            )
-        }),
-        ('Coupon Details', {
-            'fields': ('coupon_code', 'coupon_discount'),
-            'classes': ('collapse',)
-        }),
-        ('Prescription', {
-            'fields': ('prescription_file', 'prescription_verified'),
-            'classes': ('collapse',)
-        }),
-        ('Shipping Information', {
-            'fields': (
-                'tracking_number', 'shipping_carrier', 'estimated_delivery'
-            ),
-            'classes': ('collapse',)
-        }),
-        ('Notes', {
-            'fields': ('customer_notes', 'staff_notes'),
-            'classes': ('collapse',)
-        }),
-        ('Timestamps', {
-            'fields': (
-                'created_at', 'updated_at', 'paid_at', 
-                'shipped_at', 'delivered_at', 'cancelled_at'
-            ),
-            'classes': ('collapse',)
-        }),
+        ('Order Information', {'fields': ('id', 'order_number', 'user', 'status')}),
+        ('Payment Details', {'fields': ('payment_method', 'payment_id')}),
+        ('Addresses', {'fields': ('shipping_address', 'billing_address')}),
+        ('Order Amounts', {'fields': ('subtotal', 'shipping_cost', 'tax_amount', 'discount_amount', 'total_amount')}),
+        ('Coupon Details', {'fields': ('coupon_code', 'coupon_discount'), 'classes': ('collapse',)}),
+        # Temporary: remove the two new fields, keep only existing ones
+        ('Prescription', {'fields': ('prescription_file_link', 'prescription_verified'), 'classes': ('collapse',)}),
+        ('Shipping Information', {'fields': ('tracking_number', 'shipping_carrier', 'estimated_delivery'), 'classes': ('collapse',)}),
+        ('Notes', {'fields': ('customer_notes', 'staff_notes'), 'classes': ('collapse',)}),
+        ('Timestamps', {'fields': ('created_at', 'updated_at', 'paid_at', 'shipped_at', 'delivered_at', 'cancelled_at'), 'classes': ('collapse',)}),
     )
-    
+
+    actions = [
+        'mark_as_paid', 'mark_as_shipped', 'cancel_orders',
+        'mark_prescription_verified', 'mark_prescription_rejected'
+    ]
+
     def get_readonly_fields(self, request, obj=None):
-        if obj:  # editing an existing object
+        if obj:
             return self.readonly_fields + ('user',)
         return self.readonly_fields
 
+    def prescription_status(self, obj):
+        if obj.prescription_file:
+            if obj.prescription_verified:
+                return format_html('<span style="color: green;">✓ تأیید شده</span>')
+            else:
+                return format_html('<span style="color: orange;">⏳ در انتظار بررسی</span>')
+        return '—'
+    prescription_status.short_description = 'وضعیت نسخه'
+
+    def prescription_file_link(self, obj):
+        if obj.prescription_file:
+            return format_html('<a href="{}" target="_blank">دانلود نسخه</a>', obj.prescription_file.url)
+        return 'بدون نسخه'
+    prescription_file_link.short_description = 'فایل نسخه'
+
+    def mark_prescription_verified(self, request, queryset):
+        updated = queryset.update(prescription_verified=True)
+        self.message_user(request, f"{updated} نسخه تأیید شد.")
+    mark_prescription_verified.short_description = "تأیید نسخه سفارش‌های انتخاب شده"
+
+    def mark_prescription_rejected(self, request, queryset):
+        updated = queryset.update(prescription_verified=False)
+        self.message_user(request, f"{updated} نسخه رد شد.")
+    mark_prescription_rejected.short_description = "رد نسخه سفارش‌های انتخاب شده"
 
 @admin.register(OrderItem)
 class OrderItemAdmin(admin.ModelAdmin):
@@ -251,7 +249,7 @@ class RefundItemAdmin(admin.ModelAdmin):
     raw_id_fields = ['refund', 'order_item']
 
 
-# Custom admin actions
+# Custom admin actions (already included in OrderAdmin.actions list)
 @admin.action(description='Mark selected orders as paid')
 def mark_as_paid(modeladmin, request, queryset):
     updated = queryset.filter(status=Order.STATUS_PENDING).update(
@@ -286,7 +284,3 @@ def cancel_orders(modeladmin, request, queryset):
         request, 
         f'{cancelled_count} order(s) were successfully cancelled.'
     )
-
-
-# Add actions to OrderAdmin
-OrderAdmin.actions = [mark_as_paid, mark_as_shipped, cancel_orders]

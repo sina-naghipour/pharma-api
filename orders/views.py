@@ -22,9 +22,11 @@ from .serializers import (
     CreateRefundSerializer
 )
 from payments.serializers import PaymentSerializer
+from promotions.models import Coupon, CouponUsage
 
 from .permissions import IsOrderOwner, IsAdminOrReadOnly
 from .filters import OrderFilter
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -171,21 +173,46 @@ class CartViewSet(viewsets.GenericViewSet):
     
     @action(detail=False, methods=['post'])
     def apply_coupon(self, request):
-        """Apply coupon to cart"""
-        serializer = ApplyCouponSerializer(data=request.data)
-        if serializer.is_valid():
-            cart = self.get_or_create_cart()
-            code = serializer.validated_data['code']
-            
-            # This is a placeholder - we'll implement coupon validation
-            # when we build the promotions app
-            return Response(
-                {'message': _('Coupon functionality will be implemented with the promotions app')},
-                status=status.HTTP_200_OK
-            )
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+        code = request.data.get('code')
+        if not code:
+            return Response({'error': 'لطفا کد تخفیف را وارد کنید'}, status=status.HTTP_400_BAD_REQUEST)
+
+        cart = self.get_or_create_cart()
+
+        try:
+            coupon = Coupon.objects.get(code=code, is_active=True)
+        except Coupon.DoesNotExist:
+            return Response({'error': 'کد تخفیف نامعتبر است'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if coupon is valid (dates)
+        now = timezone.now()
+        if coupon.valid_from and coupon.valid_from > now:
+            return Response({'error': 'این کد تخفیف هنوز فعال نشده است'}, status=status.HTTP_400_BAD_REQUEST)
+        if coupon.valid_until and coupon.valid_until < now:
+            return Response({'error': 'این کد تخفیف منقضی شده است'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check minimum order amount
+        if cart.subtotal < coupon.minimum_order_amount:
+            return Response({'error': f'حداقل مبلغ سفارش برای این کد {coupon.minimum_order_amount} تومان است'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check global usage limit
+        if coupon.usage_limit and coupon.used_count >= coupon.usage_limit:
+            return Response({'error': 'این کد تخفیف به حداکثر تعداد استفاده رسیده است'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check per-user usage limit
+        if request.user.is_authenticated and coupon.usage_limit_per_user:
+            user_usage_count = CouponUsage.objects.filter(coupon=coupon, user=request.user).count()
+            if user_usage_count >= coupon.usage_limit_per_user:
+                return Response({'error': 'شما قبلاً از این کد تخفیف استفاده کرده‌اید'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Apply coupon to cart
+        cart.coupon = coupon
+        cart.save()
+
+        # Return updated cart data
+        serializer = CartSerializer(cart, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['post'])
     def upload_prescription(self, request):
         """Upload prescription file"""
