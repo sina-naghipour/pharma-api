@@ -1,15 +1,29 @@
-# analytics/admin.py
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
+from unfold.admin import ModelAdmin, TabularInline
 from .models import (
     PageView, Event, SearchQuery, UserSession,
     Report, Dashboard, DashboardWidget, Funnel, FunnelEntry, FunnelStep
 )
 
 
+class DashboardWidgetInline(TabularInline):
+    model = DashboardWidget
+    extra = 1
+    fields = ['name', 'type', 'configuration', 'report', 'position_x', 'position_y', 'width', 'height']
+
+
+class FunnelStepInline(TabularInline):
+    model = FunnelStep
+    extra = 0
+    fields = ['step_number', 'step_name', 'data', 'timestamp']
+    readonly_fields = ['timestamp']
+    ordering = ['step_number']
+
+
 @admin.register(PageView)
-class PageViewAdmin(admin.ModelAdmin):
+class PageViewAdmin(ModelAdmin):
     list_display = [
         'path', 'user', 'session_key', 'device_type',
         'browser', 'country', 'timestamp'
@@ -47,7 +61,7 @@ class PageViewAdmin(admin.ModelAdmin):
 
 
 @admin.register(Event)
-class EventAdmin(admin.ModelAdmin):
+class EventAdmin(ModelAdmin):
     list_display = [
         'category', 'action', 'label', 'user',
         'session_key', 'timestamp'
@@ -76,7 +90,7 @@ class EventAdmin(admin.ModelAdmin):
 
 
 @admin.register(SearchQuery)
-class SearchQueryAdmin(admin.ModelAdmin):
+class SearchQueryAdmin(ModelAdmin):
     list_display = [
         'query', 'category', 'result_count', 'user',
         'session_key', 'timestamp'
@@ -88,7 +102,7 @@ class SearchQueryAdmin(admin.ModelAdmin):
 
 
 @admin.register(UserSession)
-class UserSessionAdmin(admin.ModelAdmin):
+class UserSessionAdmin(ModelAdmin):
     list_display = [
         'user', 'session_key', 'start_time', 'duration',
         'page_views', 'events', 'is_bounce', 'device_type'
@@ -123,7 +137,7 @@ class UserSessionAdmin(admin.ModelAdmin):
 
 
 @admin.register(Report)
-class ReportAdmin(admin.ModelAdmin):
+class ReportAdmin(ModelAdmin):
     list_display = [
         'name', 'type', 'period', 'created_by',
         'is_public', 'last_generated', 'created_at'
@@ -192,14 +206,8 @@ class ReportAdmin(admin.ModelAdmin):
     generate_reports.short_description = "Generate selected reports"
 
 
-class DashboardWidgetInline(admin.TabularInline):
-    model = DashboardWidget
-    extra = 1
-    fields = ['name', 'type', 'configuration', 'report', 'position_x', 'position_y', 'width', 'height']
-
-
 @admin.register(Dashboard)
-class DashboardAdmin(admin.ModelAdmin):
+class DashboardAdmin(ModelAdmin):
     list_display = ['name', 'user', 'is_default', 'created_at']
     list_filter = ['is_default', 'created_at']
     search_fields = ['name', 'description', 'user__email']
@@ -220,7 +228,7 @@ class DashboardAdmin(admin.ModelAdmin):
 
 
 @admin.register(DashboardWidget)
-class DashboardWidgetAdmin(admin.ModelAdmin):
+class DashboardWidgetAdmin(ModelAdmin):
     list_display = ['name', 'dashboard', 'type', 'report', 'position_x', 'position_y']
     list_filter = ['type', 'created_at']
     search_fields = ['name', 'dashboard__name', 'dashboard__user__email']
@@ -241,16 +249,8 @@ class DashboardWidgetAdmin(admin.ModelAdmin):
     )
 
 
-class FunnelStepInline(admin.TabularInline):
-    model = FunnelStep
-    extra = 0
-    fields = ['step_number', 'step_name', 'data', 'timestamp']
-    readonly_fields = ['timestamp']
-    ordering = ['step_number']
-
-
 @admin.register(FunnelEntry)
-class FunnelEntryAdmin(admin.ModelAdmin):
+class FunnelEntryAdmin(ModelAdmin):
     list_display = [
         'funnel', 'user', 'session_key', 'current_step',
         'is_completed', 'started_at', 'completed_at'
@@ -277,7 +277,7 @@ class FunnelEntryAdmin(admin.ModelAdmin):
 
 
 @admin.register(Funnel)
-class FunnelAdmin(admin.ModelAdmin):
+class FunnelAdmin(ModelAdmin):
     list_display = ['name', 'created_by', 'is_active', 'created_at']
     list_filter = ['is_active', 'created_at']
     search_fields = ['name', 'description', 'created_by__email']

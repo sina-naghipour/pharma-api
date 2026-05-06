@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.auth import get_user_model
+from django.utils.translation import gettext_lazy as _
 
 User = get_user_model()
 
@@ -10,8 +11,8 @@ class BlogCategory(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        verbose_name = 'Blog Category'
-        verbose_name_plural = 'Blog Categories'
+        verbose_name = 'دسته بلاگ'
+        verbose_name_plural = 'دسته‌های بلاگ'
 
     def __str__(self):
         return self.name
@@ -31,6 +32,8 @@ class BlogPost(models.Model):
 
     class Meta:
         ordering = ['-published_at']
+        verbose_name = 'پست بلاگ'
+        verbose_name_plural = 'پست‌های بلاگ'
 
     def __str__(self):
         return self.title

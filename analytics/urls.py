@@ -1,6 +1,6 @@
 # analytics/urls.py
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 from .views import (
  PageViewViewSet, EventViewSet, SearchQueryViewSet, UserSessionViewSet,
  ReportViewSet, DashboardViewSet, DashboardWidgetViewSet, FunnelViewSet,
@@ -8,7 +8,7 @@ from .views import (
 )
 
 # Configure router for ViewSets
-router = DefaultRouter()
+router = SimpleRouter()
 router.register(r'page-views', PageViewViewSet, basename='page-view')
 router.register(r'events', EventViewSet, basename='event')
 router.register(r'search-queries', SearchQueryViewSet, basename='search-query')

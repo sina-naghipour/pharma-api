@@ -18,7 +18,9 @@ ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*").split(",")
 # INSTALLED APPS
 # -------------------
 INSTALLED_APPS = [
+    
     # Django apps
+    'unfold',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -32,7 +34,9 @@ INSTALLED_APPS = [
     'django_extensions',
     'corsheaders',
     'rest_framework.authtoken',
-
+    'admin_interface',
+    'colorfield',
+    
     # Local apps
     'accounts',
     'blog',
@@ -42,7 +46,7 @@ INSTALLED_APPS = [
     'promotions',
     'reviews',
     'support',
-    'drf_yasg',
+    'drf_spectacular',
 ]
 
 # -------------------
@@ -169,6 +173,7 @@ AUTH_USER_MODEL = 'accounts.User'  # We will create this model
 # DJANGO REST FRAMEWORK CONFIG
 # -------------------
 REST_FRAMEWORK = {
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
@@ -182,6 +187,7 @@ REST_FRAMEWORK = {
         'rest_framework.filters.OrderingFilter',
         'rest_framework.filters.SearchFilter',
     ),
+    'FORMAT_SUFFIX_KWARG': None, 
 }
 
 # -------------------
@@ -207,3 +213,27 @@ else:
         "CORS_ALLOWED_ORIGINS",
         default="http://localhost:3000,http://127.0.0.1:3000"
     ).split(",")
+
+UNFOLD = {
+    "SITE_TITLE": "Pharma Admin",
+    "SITE_HEADER": "Pharmacy Store Admin",
+    "SITE_SUBHEADER": "Manage your pharmacy inventory and orders",
+    "SITE_URL": "/",
+    "DARK_MODE": True,
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": True,
+    },
+    # Optional: You can add a custom menu here
+    # "TABS": [
+    #     {
+    #         "models": ["app_label.ModelName"],
+    #         "items": [...]
+    #     },
+    # ],
+}
+
+LANGUAGE_CODE = 'fa'
+USE_I18N = True
+USE_L10N = True 
+USE_TZ = True

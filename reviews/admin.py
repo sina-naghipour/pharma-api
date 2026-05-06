@@ -1,24 +1,25 @@
-# reviews/admin.py
 from django.contrib import admin
+from django.utils import timezone
+from unfold.admin import ModelAdmin, TabularInline
 from .models import (
     Review, ReviewImage, ReviewVote, ReviewComment,
     Question, Answer, AnswerVote
 )
 
 
-class ReviewImageInline(admin.TabularInline):
+class ReviewImageInline(TabularInline):
     model = ReviewImage
     extra = 1
 
 
-class ReviewCommentInline(admin.TabularInline):
+class ReviewCommentInline(TabularInline):
     model = ReviewComment
     extra = 0
     readonly_fields = ['user', 'is_staff_response', 'created_at']
 
 
 @admin.register(Review)
-class ReviewAdmin(admin.ModelAdmin):
+class ReviewAdmin(ModelAdmin):
     list_display = [
         'id', 'product', 'user', 'rating', 'title',
         'status', 'is_verified_purchase', 'created_at'
@@ -80,7 +81,7 @@ class ReviewAdmin(admin.ModelAdmin):
 
 
 @admin.register(ReviewComment)
-class ReviewCommentAdmin(admin.ModelAdmin):
+class ReviewCommentAdmin(ModelAdmin):
     list_display = [
         'id', 'review', 'user', 'is_staff_response',
         'created_at'
@@ -109,14 +110,14 @@ class ReviewCommentAdmin(admin.ModelAdmin):
     disapprove_comments.short_description = "Disapprove selected comments"
 
 
-class AnswerInline(admin.TabularInline):
+class AnswerInline(TabularInline):
     model = Answer
     extra = 0
     readonly_fields = ['user', 'is_staff_answer', 'created_at']
 
 
 @admin.register(Question)
-class QuestionAdmin(admin.ModelAdmin):
+class QuestionAdmin(ModelAdmin):
     list_display = [
         'id', 'product', 'user', 'status',
         'has_answer', 'created_at'
@@ -184,7 +185,7 @@ class QuestionAdmin(admin.ModelAdmin):
 
 
 @admin.register(Answer)
-class AnswerAdmin(admin.ModelAdmin):
+class AnswerAdmin(ModelAdmin):
     list_display = [
         'id', 'question', 'user', 'is_staff_answer',
         'created_at'

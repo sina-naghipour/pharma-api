@@ -1,14 +1,15 @@
 from django.contrib import admin
+from unfold.admin import ModelAdmin
 from .models import BlogCategory, BlogPost
 
 @admin.register(BlogCategory)
-class BlogCategoryAdmin(admin.ModelAdmin):
+class BlogCategoryAdmin(ModelAdmin):
     list_display = ['name', 'slug', 'created_at']
     prepopulated_fields = {'slug': ('name',)}
     search_fields = ['name']
 
 @admin.register(BlogPost)
-class BlogPostAdmin(admin.ModelAdmin):
+class BlogPostAdmin(ModelAdmin):
     list_display = ['title', 'category', 'author', 'published_at', 'is_published']
     list_filter = ['is_published', 'category', 'published_at']
     search_fields = ['title', 'summary', 'content']

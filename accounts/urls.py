@@ -1,6 +1,6 @@
 # accounts/urls.py
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
@@ -8,7 +8,7 @@ from rest_framework_simplejwt.views import (
 )
 from . import views
 
-router = DefaultRouter()
+router = SimpleRouter()
 router.register(r'users', views.UserViewSet)
 router.register(r'profiles', views.UserProfileViewSet, basename='profile')
 router.register(r'addresses', views.UserAddressViewSet, basename='address')

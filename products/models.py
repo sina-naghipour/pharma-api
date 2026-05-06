@@ -1,4 +1,3 @@
-# products/models.py
 import uuid
 from django.db import models
 from django.utils.translation import gettext_lazy as _
@@ -32,8 +31,8 @@ class Category(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
 
     class Meta:
-        verbose_name = _('Category')
-        verbose_name_plural = _('Categories')
+        verbose_name = 'دسته‌بندی'
+        verbose_name_plural = 'دسته‌بندی‌ها'
         ordering = ['order', 'name']
         indexes = [
             models.Index(fields=['name']),
@@ -45,14 +44,11 @@ class Category(models.Model):
 
     @property
     def full_path(self):
-        """Return the full category path (including parents)"""
         path = [self.name]
         parent = self.parent
-        
         while parent:
             path.append(parent.name)
             parent = parent.parent
-        
         return ' > '.join(reversed(path))
 
 
@@ -75,8 +71,8 @@ class Manufacturer(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
 
     class Meta:
-        verbose_name = _('Manufacturer')
-        verbose_name_plural = _('Manufacturers')
+        verbose_name = 'تولیدکننده'
+        verbose_name_plural = 'تولیدکنندگان'
         ordering = ['name']
         indexes = [
             models.Index(fields=['name']),
@@ -89,7 +85,6 @@ class Manufacturer(models.Model):
 
 class Product(models.Model):
     """Base product model for all pharmaceutical products"""
-    # Product types
     MEDICATION = 'medication'
     MEDICAL_SUPPLY = 'medical_supply'
     SUPPLEMENT = 'supplement'
@@ -104,7 +99,6 @@ class Product(models.Model):
         (PERSONAL_CARE, _('Personal Care')),
     ]
     
-    # Prescription requirements
     NO_PRESCRIPTION = 'none'
     PRESCRIPTION_REQUIRED = 'required'
     PRESCRIPTION_OPTIONAL = 'optional'
@@ -115,7 +109,6 @@ class Product(models.Model):
         (PRESCRIPTION_OPTIONAL, _('Prescription Optional')),
     ]
     
-    # Base fields
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(_('Name'), max_length=255)
     slug = models.SlugField(_('Slug'), max_length=280, unique=True)
@@ -145,7 +138,6 @@ class Product(models.Model):
         default=0,
         help_text=_('Maximum quantity a user can order in a single purchase. 0 = unlimited.')
     )
-    # Pricing fields
     price = models.DecimalField(
         _('Price'),
         max_digits=12,
@@ -169,8 +161,6 @@ class Product(models.Model):
         blank=True,
         null=True
     )
-    
-    # Tax and regulatory
     tax_class = models.CharField(_('Tax Class'), max_length=50, blank=True)
     is_taxable = models.BooleanField(_('Taxable'), default=True)
     prescription_required = models.CharField(
@@ -179,8 +169,6 @@ class Product(models.Model):
         choices=PRESCRIPTION_CHOICES,
         default=NO_PRESCRIPTION
     )
-    
-    # Inventory fields
     track_inventory = models.BooleanField(_('Track Inventory'), default=True)
     in_stock = models.BooleanField(_('In Stock'), default=True)
     stock_quantity = models.IntegerField(
@@ -193,8 +181,6 @@ class Product(models.Model):
         default=5
     )
     backorder_allowed = models.BooleanField(_('Backorder Allowed'), default=False)
-    
-    # Shipping fields
     weight = models.DecimalField(
         _('Weight (g)'),
         max_digits=10,
@@ -227,24 +213,18 @@ class Product(models.Model):
         blank=True,
         null=True
     )
-    
-    # Status and visibility
     is_active = models.BooleanField(_('Active'), default=True)
     is_featured = models.BooleanField(_('Featured'), default=False)
     is_approved = models.BooleanField(_('Approved'), default=False)
-    
-    # Dates
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     published_at = models.DateTimeField(_('Published At'), null=True, blank=True)
-    
-    # SEO fields
     meta_title = models.CharField(_('Meta Title'), max_length=100, blank=True)
     meta_description = models.TextField(_('Meta Description'), blank=True)
     
     class Meta:
-        verbose_name = _('Product')
-        verbose_name_plural = _('Products')
+        verbose_name = 'محصول'
+        verbose_name_plural = 'محصولات'
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['name']),
@@ -259,45 +239,36 @@ class Product(models.Model):
         return self.name
     
     def save(self, *args, **kwargs):
-        # Set published_at when product is activated
         if self.is_active and not self.published_at:
             self.published_at = timezone.now()
-        
-        # Update in_stock status based on stock quantity
         if self.track_inventory:
             self.in_stock = self.stock_quantity > 0 or self.backorder_allowed
-        
         super().save(*args, **kwargs)
     
     @property
     def discount_percentage(self):
-        """Calculate discount percentage if compare_price exists"""
         if self.compare_price and self.compare_price > self.price:
             return int(((self.compare_price - self.price) / self.compare_price) * 100)
         return 0
     
     @property
     def is_on_sale(self):
-        """Check if product is on sale"""
         return self.compare_price is not None and self.compare_price > self.price
     
     @property
     def is_low_stock(self):
-        """Check if product stock is low"""
         if not self.track_inventory:
             return False
         return 0 < self.stock_quantity <= self.low_stock_threshold
     
     @property
     def is_out_of_stock(self):
-        """Check if product is out of stock"""
         if not self.track_inventory:
             return False
         return self.stock_quantity <= 0
 
 
 class Medication(models.Model):
-    """Medication-specific details model"""
     product = models.OneToOneField(
         Product, 
         on_delete=models.CASCADE,
@@ -305,42 +276,31 @@ class Medication(models.Model):
         related_name='medication_details',
         verbose_name=_('Product')
     )
-    
-    # Medication specific fields
     generic_name = models.CharField(_('Generic Name'), max_length=255)
     dosage_form = models.CharField(_('Dosage Form'), max_length=100)
     strength = models.CharField(_('Strength'), max_length=100)
     route_of_administration = models.CharField(_('Route of Administration'), max_length=100)
-    
-    # Classification fields
     therapeutic_class = models.CharField(_('Therapeutic Class'), max_length=255, blank=True)
     atc_code = models.CharField(_('ATC Code'), max_length=10, blank=True)
-    
-    # Regulatory fields
     registration_number = models.CharField(_('Registration Number'), max_length=100, blank=True)
-    
-    # Usage and safety
     indications = models.TextField(_('Indications'), blank=True)
     contraindications = models.TextField(_('Contraindications'), blank=True)
     side_effects = models.TextField(_('Side Effects'), blank=True)
     warnings = models.TextField(_('Warnings'), blank=True)
     storage_conditions = models.CharField(_('Storage Conditions'), max_length=255, blank=True)
     pregnancy_category = models.CharField(_('Pregnancy Category'), max_length=2, blank=True)
-    
-    # Composition
     active_ingredients = models.TextField(_('Active Ingredients'), blank=True)
     inactive_ingredients = models.TextField(_('Inactive Ingredients'), blank=True)
     
     class Meta:
-        verbose_name = _('Medication')
-        verbose_name_plural = _('Medications')
+        verbose_name = 'جزئیات دارو'
+        verbose_name_plural = 'جزئیات داروها'
 
     def __str__(self):
         return f"{self.product.name} - {self.dosage_form} {self.strength}"
 
 
 class ProductImage(models.Model):
-    """Product images model"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(
         Product,
@@ -355,8 +315,8 @@ class ProductImage(models.Model):
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
 
     class Meta:
-        verbose_name = _('Product Image')
-        verbose_name_plural = _('Product Images')
+        verbose_name = 'تصویر محصول'
+        verbose_name_plural = 'تصاویر محصول'
         ordering = ['order', 'created_at']
         indexes = [
             models.Index(fields=['product', 'is_primary']),
@@ -366,22 +326,17 @@ class ProductImage(models.Model):
         return f"Image for {self.product.name}"
     
     def save(self, *args, **kwargs):
-        # If this is marked as primary, unmark all other images for this product
         if self.is_primary:
             ProductImage.objects.filter(
                 product=self.product, 
                 is_primary=True
             ).update(is_primary=False)
-        
-        # If this is the first image, make it primary
         if not ProductImage.objects.filter(product=self.product).exists():
             self.is_primary = True
-        
         super().save(*args, **kwargs)
 
 
 class ProductVariant(models.Model):
-    """Product variants model (e.g., different package sizes)"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(
         Product,
@@ -413,8 +368,8 @@ class ProductVariant(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
 
     class Meta:
-        verbose_name = _('Product Variant')
-        verbose_name_plural = _('Product Variants')
+        verbose_name = 'تنوع محصول'
+        verbose_name_plural = 'تنوع‌های محصول'
         ordering = ['name']
         indexes = [
             models.Index(fields=['sku']),
@@ -425,12 +380,10 @@ class ProductVariant(models.Model):
     
     @property
     def calculated_price(self):
-        """Calculate the final price with adjustment"""
         return self.product.price + self.price_adjustment
 
 
 class Batch(models.Model):
-    """Product batch/lot tracking model"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.ForeignKey(
         Product,
@@ -454,8 +407,8 @@ class Batch(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
 
     class Meta:
-        verbose_name = _('Batch')
-        verbose_name_plural = _('Batches')
+        verbose_name = 'دسته (بچ)'
+        verbose_name_plural = 'دسته‌ها (بچ‌ها)'
         ordering = ['expiry_date']
         indexes = [
             models.Index(fields=['batch_number']),
@@ -468,21 +421,17 @@ class Batch(models.Model):
     
     @property
     def is_expired(self):
-        """Check if batch is expired"""
         return self.expiry_date < timezone.now().date()
     
     @property
     def expires_soon(self):
-        """Check if batch expires within 90 days"""
         if self.is_expired:
             return False
-        
         expiry_threshold = timezone.now().date() + timezone.timedelta(days=90)
         return self.expiry_date <= expiry_threshold
 
 
 class ProductTag(models.Model):
-    """Product tag model for filtering and categorization"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(_('Name'), max_length=100)
     slug = models.SlugField(_('Slug'), max_length=120, unique=True)
@@ -494,8 +443,8 @@ class ProductTag(models.Model):
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
 
     class Meta:
-        verbose_name = _('Product Tag')
-        verbose_name_plural = _('Product Tags')
+        verbose_name = 'برچسب محصول'
+        verbose_name_plural = 'برچسب‌های محصول'
         ordering = ['name']
 
     def __str__(self):

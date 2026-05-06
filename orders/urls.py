@@ -1,6 +1,6 @@
 # orders/urls.py
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 from .views import (
  CartViewSet,
  OrderViewSet,
@@ -10,7 +10,7 @@ from .views import (
 )
 
 # Configure router for ViewSets
-router = DefaultRouter()
+router = SimpleRouter()
 router.register(r'cart', CartViewSet, basename='cart')
 router.register(r'orders', OrderViewSet, basename='order')
 router.register(r'shipments', ShipmentViewSet, basename='shipment')

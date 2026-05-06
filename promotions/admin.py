@@ -1,13 +1,13 @@
-# promotions/admin.py
 from django.contrib import admin
 from django.utils.html import format_html
+from unfold.admin import ModelAdmin, TabularInline
 from .models import (
     Coupon, CouponUsage, Promotion, PromotionProduct,
     RewardPoint, RewardPointTransaction, ReferralProgram, Referral
 )
 
 
-class CouponUsageInline(admin.TabularInline):
+class CouponUsageInline(TabularInline):
     model = CouponUsage
     extra = 0
     readonly_fields = ['user', 'order', 'discount_amount', 'used_at']
@@ -16,7 +16,7 @@ class CouponUsageInline(admin.TabularInline):
 
 
 @admin.register(Coupon)
-class CouponAdmin(admin.ModelAdmin):
+class CouponAdmin(ModelAdmin):
     list_display = [
         'code', 'discount_type', 'discount_value', 'valid_from',
         'valid_until', 'is_active', 'used_count', 'is_valid'
@@ -51,7 +51,7 @@ class CouponAdmin(admin.ModelAdmin):
     )
 
 
-class PromotionProductInline(admin.TabularInline):
+class PromotionProductInline(TabularInline):
     model = PromotionProduct
     extra = 1
     fields = [
@@ -62,7 +62,7 @@ class PromotionProductInline(admin.TabularInline):
 
 
 @admin.register(Promotion)
-class PromotionAdmin(admin.ModelAdmin):
+class PromotionAdmin(ModelAdmin):
     list_display = [
         'name', 'promotion_type', 'discount_percentage', 'start_date', 
         'end_date', 'is_active', 'is_valid'
@@ -94,7 +94,7 @@ class PromotionAdmin(admin.ModelAdmin):
     )
 
 
-class RewardPointTransactionInline(admin.TabularInline):
+class RewardPointTransactionInline(TabularInline):
     model = RewardPointTransaction
     extra = 0
     readonly_fields = ['transaction_type', 'points', 'reason', 'reference', 'created_at']
@@ -104,7 +104,7 @@ class RewardPointTransactionInline(admin.TabularInline):
 
 
 @admin.register(RewardPoint)
-class RewardPointAdmin(admin.ModelAdmin):
+class RewardPointAdmin(ModelAdmin):
     list_display = ['user', 'points_balance', 'lifetime_points', 'tier', 'last_activity_date']
     search_fields = ['user__email', 'user__first_name', 'user__last_name']
     readonly_fields = ['lifetime_points', 'tier', 'last_activity_date']
@@ -120,8 +120,9 @@ class RewardPointAdmin(admin.ModelAdmin):
         }),
     )
 
+
 @admin.register(RewardPointTransaction)
-class RewardPointTransactionAdmin(admin.ModelAdmin):
+class RewardPointTransactionAdmin(ModelAdmin):
     list_display = ['user', 'transaction_type', 'points', 'reason', 'created_at']
     list_filter = ['transaction_type', 'created_at']
     search_fields = ['user__email', 'reason', 'reference']
@@ -129,7 +130,7 @@ class RewardPointTransactionAdmin(admin.ModelAdmin):
 
 
 @admin.register(ReferralProgram)
-class ReferralProgramAdmin(admin.ModelAdmin):
+class ReferralProgramAdmin(ModelAdmin):
     list_display = [
         'name', 'referrer_reward_points', 'referee_reward_points',
         'referee_discount_percentage', 'is_active', 'is_valid'
@@ -151,7 +152,7 @@ class ReferralProgramAdmin(admin.ModelAdmin):
 
 
 @admin.register(Referral)
-class ReferralAdmin(admin.ModelAdmin):
+class ReferralAdmin(ModelAdmin):
     list_display = [
         'code', 'referrer', 'referee_email', 'referee',
         'status', 'referred_at', 'completed_at'

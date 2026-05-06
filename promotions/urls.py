@@ -1,6 +1,6 @@
 # promotions/urls.py
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 from .views import (
     CouponViewSet,
     PromotionViewSet,
@@ -10,7 +10,7 @@ from .views import (
 )
 
 # Configure router for ViewSets
-router = DefaultRouter()
+router = SimpleRouter()
 router.register(r'coupons', CouponViewSet, basename='coupon')
 router.register(r'promotions', PromotionViewSet, basename='promotion')
 router.register(r'reward-points', RewardPointViewSet, basename='reward-point')

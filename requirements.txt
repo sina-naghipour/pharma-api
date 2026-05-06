@@ -1,0 +1,36 @@
+--index-url https://mirror2.chabokan.net/pypi/simple/
+# Core
+Django>=4.2,<5.0
+djangorestframework>=3.14,<3.16
+djangorestframework-simplejwt>=5.3,<5.4
+django-cors-headers>=4.3,<4.4
+django-filter>=23.5,<24.0
+
+# Database (optional – comment out if using SQLite)
+# psycopg2-binary>=2.9,<3.0
+
+# Authentication & security
+PyJWT>=2.8,<3.0
+
+# Media & static
+Pillow>=10.0,<11.0
+
+# API documentation
+drf-yasg>=1.21,<1.22
+
+# Environment variables
+python-decouple>=3.8,<4.0
+
+# Utilities
+django-extensions>=3.2,<4.0
+django-debug-toolbar>=4.2,<5.0    # development only
+faker>=20.0,<21.0
+
+# User agent parsing
+user-agents>=2.2,<3.0
+
+# Admin UI improvement (optional – these will pull colorfield automatically if needed)
+django-unfold
+
+# Payments (optional – for Stripe integration)
+# stripe>=7.8,<8.0

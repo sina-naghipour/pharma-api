@@ -1,9 +1,9 @@
 # payments/urls.py
 from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from rest_framework.routers import SimpleRouter
 from . import views
 
-router = DefaultRouter()
+router = SimpleRouter()
 router.register(r'methods', views.PaymentMethodViewSet)
 router.register(r'gateways', views.PaymentGatewayViewSet)
 router.register(r'payments', views.PaymentViewSet, basename='payment')

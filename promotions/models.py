@@ -1,4 +1,3 @@
-# promotions/models.py
 import uuid
 from decimal import Decimal
 from django.db import models
@@ -10,7 +9,6 @@ from django.conf import settings
 
 class Coupon(models.Model):
     """Coupon model for order discounts"""
-    # Discount types
     PERCENTAGE = 'percentage'
     FIXED_AMOUNT = 'fixed'
     
@@ -23,7 +21,6 @@ class Coupon(models.Model):
     code = models.CharField(_('Coupon Code'), max_length=50, unique=True)
     description = models.TextField(_('Description'), blank=True)
     
-    # Discount configuration
     discount_type = models.CharField(
         _('Discount Type'),
         max_length=10,
@@ -52,7 +49,6 @@ class Coupon(models.Model):
         validators=[MinValueValidator(0)]
     )
     
-    # Usage limits
     usage_limit = models.PositiveIntegerField(
         _('Usage Limit'),
         null=True,
@@ -67,21 +63,16 @@ class Coupon(models.Model):
     )
     used_count = models.PositiveIntegerField(_('Used Count'), default=0)
     
-    # Validity period
     valid_from = models.DateTimeField(_('Valid From'))
     valid_until = models.DateTimeField(_('Valid Until'), null=True, blank=True)
     
-    # Status
     is_active = models.BooleanField(_('Active'), default=True)
     
-    # Creation and modification timestamps
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
-    # Restrictions
     first_time_customers_only = models.BooleanField(_('First Time Customers Only'), default=False)
     
-    # Relations
     applicable_products = models.ManyToManyField(
         'products.Product',
         blank=True,
@@ -96,8 +87,8 @@ class Coupon(models.Model):
     )
     
     class Meta:
-        verbose_name = _('Coupon')
-        verbose_name_plural = _('Coupons')
+        verbose_name = 'کوپن'
+        verbose_name_plural = 'کوپن‌ها'
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['code']),
@@ -123,11 +114,9 @@ class Coupon(models.Model):
     
     @property
     def is_fully_redeemed(self):
-        """Check if coupon has reached its usage limit"""
         return self.usage_limit and self.used_count >= self.usage_limit
     
     def calculate_discount(self, order_total):
-        """Calculate discount amount for an order"""
         if not self.is_valid or order_total < self.minimum_order_amount:
             return Decimal('0.00')
         
@@ -135,23 +124,20 @@ class Coupon(models.Model):
             discount = order_total * self.discount_value / 100
             if self.maximum_discount_amount:
                 discount = min(discount, self.maximum_discount_amount)
-        else:  # Fixed amount
+        else:
             discount = min(self.discount_value, order_total)
         
         return discount.quantize(Decimal('0.01'))
     
     def can_be_used_by(self, user):
-        """Check if coupon can be used by a specific user"""
         if not user or not user.is_authenticated:
             return False
         
-        # Check if first time customer restriction applies
         if self.first_time_customers_only and user.orders.filter(status__in=[
             'paid', 'preparing', 'shipped', 'delivered'
         ]).exists():
             return False
         
-        # Check user-specific usage limit
         if self.usage_limit_per_user:
             user_usage_count = CouponUsage.objects.filter(
                 coupon=self,
@@ -163,7 +149,6 @@ class Coupon(models.Model):
         return True
     
     def record_usage(self, user, order):
-        """Record coupon usage"""
         self.used_count += 1
         self.save(update_fields=['used_count', 'updated_at'])
         
@@ -176,7 +161,6 @@ class Coupon(models.Model):
 
 
 class CouponUsage(models.Model):
-    """Records of coupon usage"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     coupon = models.ForeignKey(
         Coupon,
@@ -205,8 +189,8 @@ class CouponUsage(models.Model):
     used_at = models.DateTimeField(_('Used At'), auto_now_add=True)
     
     class Meta:
-        verbose_name = _('Coupon Usage')
-        verbose_name_plural = _('Coupon Usages')
+        verbose_name = 'استفاده از کوپن'
+        verbose_name_plural = 'استفاده‌های کوپن'
         ordering = ['-used_at']
         indexes = [
             models.Index(fields=['coupon']),
@@ -220,10 +204,8 @@ class CouponUsage(models.Model):
 
 
 class Promotion(models.Model):
-    """Promotional campaign model"""
-    # Promotion types
     SALE = 'sale'
-    BOGO = 'bogo'  # Buy one get one
+    BOGO = 'bogo'
     BUNDLE = 'bundle'
     FLASH_SALE = 'flash_sale'
     CLEARANCE = 'clearance'
@@ -248,7 +230,6 @@ class Promotion(models.Model):
         default=SALE
     )
     
-    # Discount configuration
     discount_percentage = models.DecimalField(
         _('Discount Percentage'),
         max_digits=5,
@@ -258,14 +239,11 @@ class Promotion(models.Model):
         blank=True
     )
     
-    # Validity period
     start_date = models.DateTimeField(_('Start Date'))
     end_date = models.DateTimeField(_('End Date'), null=True, blank=True)
     
-    # Status
     is_active = models.BooleanField(_('Active'), default=True)
     
-    # Display options
     banner_image = models.ImageField(
         _('Banner Image'),
         upload_to='promotions/%Y/%m/',
@@ -274,7 +252,6 @@ class Promotion(models.Model):
     banner_text = models.CharField(_('Banner Text'), max_length=255, blank=True)
     highlight_color = models.CharField(_('Highlight Color'), max_length=20, blank=True)
     
-    # Relations
     products = models.ManyToManyField(
         'products.Product',
         through='PromotionProduct',
@@ -288,13 +265,12 @@ class Promotion(models.Model):
         verbose_name=_('Categories')
     )
     
-    # Creation and modification timestamps
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Promotion')
-        verbose_name_plural = _('Promotions')
+        verbose_name = 'تبلیغات'
+        verbose_name_plural = 'تبلیغات'
         ordering = ['-start_date']
         indexes = [
             models.Index(fields=['promotion_type']),
@@ -307,7 +283,6 @@ class Promotion(models.Model):
     
     @property
     def is_valid(self):
-        """Check if promotion is valid based on dates and status"""
         now = timezone.now()
         return (
             self.is_active and
@@ -317,25 +292,20 @@ class Promotion(models.Model):
     
     @property
     def is_expired(self):
-        """Check if promotion is expired"""
         return self.end_date and timezone.now() > self.end_date
     
     @property
     def days_remaining(self):
-        """Calculate days remaining for promotion"""
         if not self.end_date:
             return None
-        
         now = timezone.now()
         if now > self.end_date:
             return 0
-        
         delta = self.end_date - now
         return delta.days
 
 
 class PromotionProduct(models.Model):
-    """Relationship between promotions and products with specific rules"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     promotion = models.ForeignKey(
         Promotion,
@@ -350,7 +320,6 @@ class PromotionProduct(models.Model):
         verbose_name=_('Product')
     )
     
-    # Product-specific discount rules
     discount_percentage = models.DecimalField(
         _('Discount Percentage'),
         max_digits=5,
@@ -370,7 +339,6 @@ class PromotionProduct(models.Model):
         help_text=_('Fixed discount price')
     )
     
-    # For BOGO offers
     buy_quantity = models.PositiveIntegerField(_('Buy Quantity'), default=1)
     get_quantity = models.PositiveIntegerField(_('Get Quantity'), default=0)
     get_discount_percentage = models.DecimalField(
@@ -382,12 +350,11 @@ class PromotionProduct(models.Model):
         help_text=_('Discount for the free/discounted item in BOGO offers')
     )
     
-    # Display order
     display_order = models.PositiveIntegerField(_('Display Order'), default=0)
     
     class Meta:
-        verbose_name = _('Promotion Product')
-        verbose_name_plural = _('Promotion Products')
+        verbose_name = 'محصول تبلیغاتی'
+        verbose_name_plural = 'محصولات تبلیغاتی'
         ordering = ['display_order']
         unique_together = ['promotion', 'product']
     
@@ -395,7 +362,6 @@ class PromotionProduct(models.Model):
         return f"{self.promotion.name} - {self.product.name}"
     
     def get_discount_price(self):
-        """Calculate the discounted price for this product"""
         if self.discount_price:
             return self.discount_price
         
@@ -410,7 +376,6 @@ class PromotionProduct(models.Model):
 
 
 class RewardPoint(models.Model):
-    """Customer reward points model"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -423,8 +388,8 @@ class RewardPoint(models.Model):
     last_activity_date = models.DateTimeField(_('Last Activity Date'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Reward Point')
-        verbose_name_plural = _('Reward Points')
+        verbose_name = 'امتیاز جایزه'
+        verbose_name_plural = 'امتیازات جایزه'
         indexes = [
             models.Index(fields=['user']),
             models.Index(fields=['points_balance']),
@@ -434,12 +399,10 @@ class RewardPoint(models.Model):
         return f"{self.user.email} - {self.points_balance} points"
     
     def add_points(self, points, reason, reference=None):
-        """Add points to user's balance"""
         self.points_balance += points
         self.lifetime_points += points
         self.save(update_fields=['points_balance', 'lifetime_points', 'last_activity_date'])
         
-        # Record transaction
         RewardPointTransaction.objects.create(
             user=self.user,
             points=points,
@@ -449,14 +412,12 @@ class RewardPoint(models.Model):
         )
     
     def deduct_points(self, points, reason, reference=None):
-        """Deduct points from user's balance"""
         if points > self.points_balance:
             raise ValueError(_("Insufficient points balance"))
         
         self.points_balance -= points
         self.save(update_fields=['points_balance', 'last_activity_date'])
         
-        # Record transaction
         RewardPointTransaction.objects.create(
             user=self.user,
             points=points,
@@ -467,7 +428,6 @@ class RewardPoint(models.Model):
     
     @property
     def tier(self):
-        """Calculate user's reward tier based on lifetime points"""
         if self.lifetime_points >= 10000:
             return 'platinum'
         elif self.lifetime_points >= 5000:
@@ -479,8 +439,6 @@ class RewardPoint(models.Model):
 
 
 class RewardPointTransaction(models.Model):
-    """Transaction history for reward points"""
-    # Transaction types
     EARNED = 'earned'
     REDEEMED = 'redeemed'
     EXPIRED = 'expired'
@@ -511,8 +469,8 @@ class RewardPointTransaction(models.Model):
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     
     class Meta:
-        verbose_name = _('Reward Point Transaction')
-        verbose_name_plural = _('Reward Point Transactions')
+        verbose_name = 'تراکنش امتیاز'
+        verbose_name_plural = 'تراکنش‌های امتیاز'
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['user']),
@@ -525,12 +483,10 @@ class RewardPointTransaction(models.Model):
 
 
 class ReferralProgram(models.Model):
-    """Referral program configuration"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(_('Program Name'), max_length=255)
     description = models.TextField(_('Description'), blank=True)
     
-    # Reward configuration
     referrer_reward_points = models.PositiveIntegerField(
         _('Referrer Reward Points'),
         default=100
@@ -547,20 +503,17 @@ class ReferralProgram(models.Model):
         default=10
     )
     
-    # Validity period
     start_date = models.DateTimeField(_('Start Date'))
     end_date = models.DateTimeField(_('End Date'), null=True, blank=True)
     
-    # Status
     is_active = models.BooleanField(_('Active'), default=True)
     
-    # Creation and modification timestamps
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Referral Program')
-        verbose_name_plural = _('Referral Programs')
+        verbose_name = 'برنامه ارجاع'
+        verbose_name_plural = 'برنامه‌های ارجاع'
         ordering = ['-created_at']
     
     def __str__(self):
@@ -568,7 +521,6 @@ class ReferralProgram(models.Model):
     
     @property
     def is_valid(self):
-        """Check if program is valid based on dates and status"""
         now = timezone.now()
         return (
             self.is_active and
@@ -578,8 +530,6 @@ class ReferralProgram(models.Model):
 
 
 class Referral(models.Model):
-    """Referral record"""
-    # Referral status
     PENDING = 'pending'
     SUCCESSFUL = 'successful'
     EXPIRED = 'expired'
@@ -623,8 +573,8 @@ class Referral(models.Model):
     completed_at = models.DateTimeField(_('Completed At'), null=True, blank=True)
     
     class Meta:
-        verbose_name = _('Referral')
-        verbose_name_plural = _('Referrals')
+        verbose_name = 'ارجاع'
+        verbose_name_plural = 'ارجاع‌ها'
         ordering = ['-referred_at']
         indexes = [
             models.Index(fields=['referrer']),
@@ -637,7 +587,6 @@ class Referral(models.Model):
         return f"{self.referrer.email} referred {self.referee_email}"
     
     def mark_successful(self, referee):
-        """Mark referral as successful and process rewards"""
         if self.status != self.PENDING:
             return
         
@@ -646,9 +595,7 @@ class Referral(models.Model):
         self.completed_at = timezone.now()
         self.save(update_fields=['referee', 'status', 'completed_at'])
         
-        # Process rewards
         if self.program.is_valid:
-            # Reward referrer
             try:
                 referrer_points, created = RewardPoint.objects.get_or_create(user=self.referrer)
                 referrer_points.add_points(
@@ -659,7 +606,6 @@ class Referral(models.Model):
             except Exception as e:
                 print(f"Failed to reward referrer: {e}")
             
-            # Reward referee
             try:
                 referee_points, created = RewardPoint.objects.get_or_create(user=referee)
                 referee_points.add_points(
@@ -668,7 +614,6 @@ class Referral(models.Model):
                     f"Referral:{self.id}"
                 )
                 
-                # Create a coupon for the referee's first order
                 from django.utils.crypto import get_random_string
                 code = f"REF-{get_random_string(8).upper()}"
                 

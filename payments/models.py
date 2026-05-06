@@ -1,9 +1,9 @@
-# payments/models.py
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.core.validators import MinValueValidator
 from decimal import Decimal
 import uuid
+from django.utils.translation import gettext_lazy as _
 
 User = get_user_model()
 
@@ -53,12 +53,13 @@ class PaymentMethod(models.Model):
     
     class Meta:
         ordering = ['name']
+        verbose_name = 'روش پرداخت'
+        verbose_name_plural = 'روش‌های پرداخت'
     
     def __str__(self):
         return self.name
     
     def calculate_processing_fee(self, amount):
-        """Calculate processing fee for given amount"""
         fee = self.processing_fee
         if self.processing_fee_percentage > 0:
             fee += (amount * self.processing_fee_percentage / 100)
@@ -66,7 +67,6 @@ class PaymentMethod(models.Model):
 
 
 class PaymentGateway(models.Model):
-    """Payment gateway configurations"""
     GATEWAY_TYPES = [
         ('stripe', 'Stripe'),
         ('paypal', 'PayPal'),
@@ -91,13 +91,14 @@ class PaymentGateway(models.Model):
     
     class Meta:
         ordering = ['name']
+        verbose_name = 'درگاه پرداخت'
+        verbose_name_plural = 'درگاه‌های پرداخت'
     
     def __str__(self):
         return f"{self.name} ({'Test' if self.is_test_mode else 'Live'})"
 
 
 class Payment(models.Model):
-    """Payment transactions"""
     PAYMENT_STATUS = [
         ('pending', 'Pending'),
         ('processing', 'Processing'),
@@ -141,6 +142,8 @@ class Payment(models.Model):
             models.Index(fields=['order']),
             models.Index(fields=['gateway_transaction_id']),
         ]
+        verbose_name = 'پرداخت'
+        verbose_name_plural = 'پرداخت‌ها'
     
     def __str__(self):
         return f"Payment {self.id} - {self.amount} {self.currency}"
@@ -152,7 +155,6 @@ class Payment(models.Model):
 
 
 class PaymentRefund(models.Model):
-    """Payment refunds"""
     REFUND_STATUS = [
         ('pending', 'Pending'),
         ('processing', 'Processing'),
@@ -192,13 +194,14 @@ class PaymentRefund(models.Model):
     
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'بازپرداخت'
+        verbose_name_plural = 'بازپرداخت‌ها'
     
     def __str__(self):
         return f"Refund {self.id} - {self.amount}"
 
 
 class SavedPaymentMethod(models.Model):
-    """User's saved payment methods"""
     CARD_TYPES = [
         ('visa', 'Visa'),
         ('mastercard', 'MasterCard'),
@@ -210,17 +213,14 @@ class SavedPaymentMethod(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='saved_payment_methods')
     payment_method = models.ForeignKey(PaymentMethod, on_delete=models.CASCADE)
     
-    # For cards
     card_type = models.CharField(max_length=20, choices=CARD_TYPES, blank=True)
     last_four_digits = models.CharField(max_length=4, blank=True)
     expiry_month = models.PositiveIntegerField(null=True, blank=True)
     expiry_year = models.PositiveIntegerField(null=True, blank=True)
     cardholder_name = models.CharField(max_length=100, blank=True)
     
-    # For other payment methods
     account_identifier = models.CharField(max_length=100, blank=True)
     
-    # Gateway information
     gateway_token = models.CharField(max_length=255, blank=True)
     gateway_customer_id = models.CharField(max_length=255, blank=True)
     
@@ -233,6 +233,8 @@ class SavedPaymentMethod(models.Model):
     class Meta:
         ordering = ['-is_default', '-created_at']
         unique_together = ['user', 'gateway_token']
+        verbose_name = 'روش پرداخت ذخیره شده'
+        verbose_name_plural = 'روش‌های پرداخت ذخیره شده'
     
     def __str__(self):
         if self.last_four_digits:
@@ -241,7 +243,6 @@ class SavedPaymentMethod(models.Model):
 
 
 class PaymentWebhook(models.Model):
-    """Payment webhook logs"""
     WEBHOOK_STATUS = [
         ('received', 'Received'),
         ('processing', 'Processing'),
@@ -272,13 +273,14 @@ class PaymentWebhook(models.Model):
             models.Index(fields=['gateway', 'event_type']),
             models.Index(fields=['webhook_id']),
         ]
+        verbose_name = 'وب‌هوک پرداخت'
+        verbose_name_plural = 'وب‌هوک‌های پرداخت'
     
     def __str__(self):
         return f"Webhook {self.event_type} from {self.gateway.name}"
 
 
 class PaymentDispute(models.Model):
-    """Payment disputes/chargebacks"""
     DISPUTE_STATUS = [
         ('open', 'Open'),
         ('under_review', 'Under Review'),
@@ -315,6 +317,8 @@ class PaymentDispute(models.Model):
     
     class Meta:
         ordering = ['-created_at']
+        verbose_name = 'اختلاف پرداخت'
+        verbose_name_plural = 'اختلافات پرداخت'
     
     def __str__(self):
         return f"Dispute {self.gateway_dispute_id} - {self.amount} {self.currency}"

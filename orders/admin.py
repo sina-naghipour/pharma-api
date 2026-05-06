@@ -1,12 +1,13 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
+from unfold.admin import ModelAdmin, TabularInline
 from .models import (
     Cart, CartItem, Order, OrderItem, Shipment, ShipmentItem, Refund, RefundItem
 )
 
 
-class CartItemInline(admin.TabularInline):
+class CartItemInline(TabularInline):
     model = CartItem
     extra = 0
     readonly_fields = ['total_price', 'added_at']
@@ -14,7 +15,7 @@ class CartItemInline(admin.TabularInline):
 
 
 @admin.register(Cart)
-class CartAdmin(admin.ModelAdmin):
+class CartAdmin(ModelAdmin):
     list_display = [
         'id', 'user', 'total_items', 'subtotal', 
         'is_active', 'updated_at'
@@ -49,7 +50,7 @@ class CartAdmin(admin.ModelAdmin):
 
 
 @admin.register(CartItem)
-class CartItemAdmin(admin.ModelAdmin):
+class CartItemAdmin(ModelAdmin):
     list_display = ['cart', 'product', 'variant', 'quantity', 'unit_price', 'total_price']
     list_filter = ['added_at', 'updated_at']
     search_fields = ['product__name', 'cart__user__email']
@@ -57,7 +58,7 @@ class CartItemAdmin(admin.ModelAdmin):
     raw_id_fields = ['cart', 'product', 'variant']
 
 
-class OrderItemInline(admin.TabularInline):
+class OrderItemInline(TabularInline):
     model = OrderItem
     extra = 0
     readonly_fields = ['id', 'product_name', 'sku', 'subtotal', 'total_price']
@@ -68,7 +69,7 @@ class OrderItemInline(admin.TabularInline):
 
 
 @admin.register(Order)
-class OrderAdmin(admin.ModelAdmin):
+class OrderAdmin(ModelAdmin):
     list_display = [
         'order_number', 'user', 'status', 'prescription_status',
         'total_amount', 'payment_method', 'created_at'
@@ -96,7 +97,6 @@ class OrderAdmin(admin.ModelAdmin):
         ('Addresses', {'fields': ('shipping_address', 'billing_address')}),
         ('Order Amounts', {'fields': ('subtotal', 'shipping_cost', 'tax_amount', 'discount_amount', 'total_amount')}),
         ('Coupon Details', {'fields': ('coupon_code', 'coupon_discount'), 'classes': ('collapse',)}),
-        # Temporary: remove the two new fields, keep only existing ones
         ('Prescription', {'fields': ('prescription_file_link', 'prescription_verified'), 'classes': ('collapse',)}),
         ('Shipping Information', {'fields': ('tracking_number', 'shipping_carrier', 'estimated_delivery'), 'classes': ('collapse',)}),
         ('Notes', {'fields': ('customer_notes', 'staff_notes'), 'classes': ('collapse',)}),
@@ -138,8 +138,9 @@ class OrderAdmin(admin.ModelAdmin):
         self.message_user(request, f"{updated} نسخه رد شد.")
     mark_prescription_rejected.short_description = "رد نسخه سفارش‌های انتخاب شده"
 
+
 @admin.register(OrderItem)
-class OrderItemAdmin(admin.ModelAdmin):
+class OrderItemAdmin(ModelAdmin):
     list_display = [
         'order', 'product_name', 'variant_name', 'quantity', 
         'unit_price', 'total_price'
@@ -156,14 +157,14 @@ class OrderItemAdmin(admin.ModelAdmin):
     raw_id_fields = ['order', 'product', 'variant']
 
 
-class ShipmentItemInline(admin.TabularInline):
+class ShipmentItemInline(TabularInline):
     model = ShipmentItem
     extra = 0
     fields = ['order_item', 'quantity', 'batch_number']
 
 
 @admin.register(Shipment)
-class ShipmentAdmin(admin.ModelAdmin):
+class ShipmentAdmin(ModelAdmin):
     list_display = [
         'tracking_number', 'order', 'carrier', 'status', 
         'shipped_at', 'delivered_at'
@@ -195,7 +196,7 @@ class ShipmentAdmin(admin.ModelAdmin):
 
 
 @admin.register(ShipmentItem)
-class ShipmentItemAdmin(admin.ModelAdmin):
+class ShipmentItemAdmin(ModelAdmin):
     list_display = ['shipment', 'order_item', 'quantity', 'batch_number']
     search_fields = [
         'shipment__tracking_number', 'order_item__product_name',
@@ -204,14 +205,14 @@ class ShipmentItemAdmin(admin.ModelAdmin):
     raw_id_fields = ['shipment', 'order_item']
 
 
-class RefundItemInline(admin.TabularInline):
+class RefundItemInline(TabularInline):
     model = RefundItem
     extra = 0
     fields = ['order_item', 'quantity', 'amount', 'reason']
 
 
 @admin.register(Refund)
-class RefundAdmin(admin.ModelAdmin):
+class RefundAdmin(ModelAdmin):
     list_display = [
         'id', 'order', 'amount', 'status', 'requested_at', 'processed_at'
     ]
@@ -241,7 +242,7 @@ class RefundAdmin(admin.ModelAdmin):
 
 
 @admin.register(RefundItem)
-class RefundItemAdmin(admin.ModelAdmin):
+class RefundItemAdmin(ModelAdmin):
     list_display = ['refund', 'order_item', 'quantity', 'amount', 'reason']
     search_fields = [
         'refund__order__order_number', 'order_item__product_name', 'reason'

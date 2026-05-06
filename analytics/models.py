@@ -1,4 +1,3 @@
-# analytics/models.py
 import uuid
 from django.db import models
 from django.utils.translation import gettext_lazy as _
@@ -76,8 +75,8 @@ class PageView(models.Model):
     load_time = models.FloatField(_('Load Time (ms)'), null=True, blank=True)
     
     class Meta:
-        verbose_name = _('Page View')
-        verbose_name_plural = _('Page Views')
+        verbose_name = 'بازدید صفحه'
+        verbose_name_plural = 'بازدیدهای صفحه'
         ordering = ['-timestamp']
         indexes = [
             models.Index(fields=['path']),
@@ -159,8 +158,8 @@ class Event(models.Model):
     timestamp = models.DateTimeField(_('Timestamp'), auto_now_add=True, db_index=True)
     
     class Meta:
-        verbose_name = _('Event')
-        verbose_name_plural = _('Events')
+        verbose_name = 'رویداد'
+        verbose_name_plural = 'رویدادها'
         ordering = ['-timestamp']
         indexes = [
             models.Index(fields=['category']),
@@ -205,8 +204,8 @@ class SearchQuery(models.Model):
     ip_address = models.GenericIPAddressField(_('IP Address'), blank=True, null=True)
     
     class Meta:
-        verbose_name = _('Search Query')
-        verbose_name_plural = _('Search Queries')
+        verbose_name = 'جستجو'
+        verbose_name_plural = 'جستجوها'
         ordering = ['-timestamp']
         indexes = [
             models.Index(fields=['query']),
@@ -269,8 +268,8 @@ class UserSession(models.Model):
     utm_campaign = models.CharField(_('UTM Campaign'), max_length=100, blank=True)
     
     class Meta:
-        verbose_name = _('User Session')
-        verbose_name_plural = _('User Sessions')
+        verbose_name = 'نشست کاربر'
+        verbose_name_plural = 'نشست‌های کاربر'
         ordering = ['-start_time']
         indexes = [
             models.Index(fields=['session_key']),
@@ -367,8 +366,8 @@ class Report(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Report')
-        verbose_name_plural = _('Reports')
+        verbose_name = 'گزارش'
+        verbose_name_plural = 'گزارش‌ها'
         ordering = ['-created_at']
     
     def __str__(self):
@@ -398,8 +397,8 @@ class Dashboard(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Dashboard')
-        verbose_name_plural = _('Dashboards')
+        verbose_name = 'داشبورد'
+        verbose_name_plural = 'داشبوردها'
         ordering = ['-is_default', 'name']
         unique_together = [['user', 'name']]
     
@@ -464,8 +463,8 @@ class DashboardWidget(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Dashboard Widget')
-        verbose_name_plural = _('Dashboard Widgets')
+        verbose_name = 'ویجت داشبورد'
+        verbose_name_plural = 'ویجت‌های داشبورد'
         ordering = ['dashboard', 'position_y', 'position_x']
     
     def __str__(self):
@@ -495,8 +494,8 @@ class Funnel(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Funnel')
-        verbose_name_plural = _('Funnels')
+        verbose_name = 'قیف تبدیل'
+        verbose_name_plural = 'قیف‌های تبدیل'
         ordering = ['-created_at']
     
     def __str__(self):
@@ -537,8 +536,8 @@ class FunnelEntry(models.Model):
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
     
     class Meta:
-        verbose_name = _('Funnel Entry')
-        verbose_name_plural = _('Funnel Entries')
+        verbose_name = 'ورودی قیف'
+        verbose_name_plural = 'ورودی‌های قیف'
         ordering = ['-started_at']
         indexes = [
             models.Index(fields=['funnel', 'is_completed']),
@@ -576,8 +575,8 @@ class FunnelStep(models.Model):
     timestamp = models.DateTimeField(_('Timestamp'), auto_now_add=True)
     
     class Meta:
-        verbose_name = _('Funnel Step')
-        verbose_name_plural = _('Funnel Steps')
+        verbose_name = 'مرحله قیف'
+        verbose_name_plural = 'مراحل قیف'
         ordering = ['entry', 'step_number']
         unique_together = [['entry', 'step_number']]
     

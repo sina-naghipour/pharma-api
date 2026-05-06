@@ -1,14 +1,14 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
+from unfold.admin import ModelAdmin, TabularInline, StackedInline
 from .models import (
     Category, Manufacturer, Product, Medication, ProductImage,
     ProductVariant, Batch, ProductTag
 )
 
 
-class ProductImageInline(admin.TabularInline):
+class ProductImageInline(TabularInline):
     """Inline for product images"""
     model = ProductImage
     extra = 1
@@ -17,7 +17,7 @@ class ProductImageInline(admin.TabularInline):
     show_change_link = True
 
 
-class ProductVariantInline(admin.TabularInline):
+class ProductVariantInline(TabularInline):
     """Inline for product variants"""
     model = ProductVariant
     extra = 1
@@ -25,7 +25,7 @@ class ProductVariantInline(admin.TabularInline):
     readonly_fields = ['created_at']
 
 
-class BatchInline(admin.TabularInline):
+class BatchInline(TabularInline):
     """Inline for product batches"""
     model = Batch
     extra = 0
@@ -34,7 +34,7 @@ class BatchInline(admin.TabularInline):
     readonly_fields = ['created_at', 'updated_at']
 
 
-class MedicationInline(admin.StackedInline):
+class MedicationInline(StackedInline):
     """Inline for medication details (only for medication products)"""
     model = Medication
     can_delete = False
@@ -61,7 +61,7 @@ class MedicationInline(admin.StackedInline):
 
 
 @admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
+class CategoryAdmin(ModelAdmin):
     list_display = ['name', 'slug', 'parent', 'is_active', 'order', 'created_at']
     list_filter = ['is_active', 'parent', 'created_at']
     search_fields = ['name', 'slug', 'description']
@@ -87,7 +87,7 @@ class CategoryAdmin(admin.ModelAdmin):
 
 
 @admin.register(Manufacturer)
-class ManufacturerAdmin(admin.ModelAdmin):
+class ManufacturerAdmin(ModelAdmin):
     list_display = ['name', 'slug', 'country', 'is_approved', 'created_at']
     list_filter = ['is_approved', 'country', 'created_at']
     search_fields = ['name', 'slug', 'description', 'country']
@@ -112,7 +112,7 @@ class ManufacturerAdmin(admin.ModelAdmin):
 
 
 @admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):
+class ProductAdmin(ModelAdmin):
     list_display = ['name', 'sku', 'product_type', 'price', 'in_stock', 
                     'is_active', 'is_featured', 'created_at']
     list_filter = ['product_type', 'is_active', 'is_featured', 'in_stock', 
@@ -176,7 +176,7 @@ class ProductAdmin(admin.ModelAdmin):
 
 
 @admin.register(ProductImage)
-class ProductImageAdmin(admin.ModelAdmin):
+class ProductImageAdmin(ModelAdmin):
     list_display = ['product', 'image_preview', 'is_primary', 'order', 'created_at']
     list_filter = ['is_primary', 'created_at']
     search_fields = ['product__name', 'alt_text']
@@ -201,7 +201,7 @@ class ProductImageAdmin(admin.ModelAdmin):
 
 
 @admin.register(ProductVariant)
-class ProductVariantAdmin(admin.ModelAdmin):
+class ProductVariantAdmin(ModelAdmin):
     list_display = ['product', 'name', 'sku', 'price_adjustment', 
                     'stock_quantity', 'is_active', 'calculated_price']
     list_filter = ['is_active', 'created_at']
@@ -230,7 +230,7 @@ class ProductVariantAdmin(admin.ModelAdmin):
 
 
 @admin.register(Batch)
-class BatchAdmin(admin.ModelAdmin):
+class BatchAdmin(ModelAdmin):
     list_display = ['product', 'batch_number', 'manufacturing_date', 'expiry_date',
                     'quantity', 'remaining_quantity', 'is_expired']
     list_filter = ['expiry_date', 'manufacturing_date', 'created_at']
@@ -263,7 +263,7 @@ class BatchAdmin(admin.ModelAdmin):
 
 
 @admin.register(ProductTag)
-class ProductTagAdmin(admin.ModelAdmin):
+class ProductTagAdmin(ModelAdmin):
     list_display = ['name', 'slug', 'product_count', 'created_at']
     search_fields = ['name', 'slug']
     prepopulated_fields = {'slug': ('name',)}

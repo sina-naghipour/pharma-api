@@ -1,7 +1,7 @@
-# support/admin.py
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
+from unfold.admin import ModelAdmin, TabularInline
 from .models import (
     SupportCategory, SupportTicket, TicketMessage, TicketAttachment,
     FAQ, KnowledgeBaseCategory, KnowledgeBaseArticle,
@@ -10,21 +10,21 @@ from .models import (
 
 
 @admin.register(SupportCategory)
-class SupportCategoryAdmin(admin.ModelAdmin):
+class SupportCategoryAdmin(ModelAdmin):
     list_display = ['name', 'description', 'is_active', 'display_order', 'assigned_to']
     list_filter = ['is_active']
     search_fields = ['name', 'description']
     ordering = ['display_order', 'name']
 
 
-class TicketMessageInline(admin.TabularInline):
+class TicketMessageInline(TabularInline):
     model = TicketMessage
     extra = 0
     readonly_fields = ['user', 'created_at', 'is_staff_reply', 'read_by_user', 'read_by_staff']
     fields = ['user', 'message', 'is_staff_reply', 'is_internal_note', 'created_at', 'read_by_user', 'read_by_staff']
 
 
-class TicketAttachmentInline(admin.TabularInline):
+class TicketAttachmentInline(TabularInline):
     model = TicketAttachment
     extra = 0
     readonly_fields = ['uploaded_by', 'created_at', 'file_size', 'file_type']
@@ -32,7 +32,7 @@ class TicketAttachmentInline(admin.TabularInline):
 
 
 @admin.register(SupportTicket)
-class SupportTicketAdmin(admin.ModelAdmin):
+class SupportTicketAdmin(ModelAdmin):
     list_display = [
         'ticket_number', 'subject', 'user', 'category',
         'status', 'priority', 'assigned_to', 'created_at'
@@ -92,7 +92,7 @@ class SupportTicketAdmin(admin.ModelAdmin):
 
 
 @admin.register(TicketMessage)
-class TicketMessageAdmin(admin.ModelAdmin):
+class TicketMessageAdmin(ModelAdmin):
     list_display = [
         'ticket', 'user', 'is_staff_reply',
         'is_internal_note', 'created_at'
@@ -103,7 +103,7 @@ class TicketMessageAdmin(admin.ModelAdmin):
 
 
 @admin.register(TicketAttachment)
-class TicketAttachmentAdmin(admin.ModelAdmin):
+class TicketAttachmentAdmin(ModelAdmin):
     list_display = [
         'filename', 'ticket', 'file_type',
         'file_size', 'uploaded_by', 'created_at'
@@ -114,7 +114,7 @@ class TicketAttachmentAdmin(admin.ModelAdmin):
 
 
 @admin.register(FAQ)
-class FAQAdmin(admin.ModelAdmin):
+class FAQAdmin(ModelAdmin):
     list_display = [
         'question', 'category', 'is_published',
         'display_order', 'view_count', 'helpful_count'
@@ -143,7 +143,7 @@ class FAQAdmin(admin.ModelAdmin):
 
 
 @admin.register(KnowledgeBaseCategory)
-class KnowledgeBaseCategoryAdmin(admin.ModelAdmin):
+class KnowledgeBaseCategoryAdmin(ModelAdmin):
     list_display = ['name', 'slug', 'parent', 'is_active', 'display_order']
     list_filter = ['is_active', 'parent']
     search_fields = ['name', 'description', 'slug']
@@ -152,7 +152,7 @@ class KnowledgeBaseCategoryAdmin(admin.ModelAdmin):
 
 
 @admin.register(KnowledgeBaseArticle)
-class KnowledgeBaseArticleAdmin(admin.ModelAdmin):
+class KnowledgeBaseArticleAdmin(ModelAdmin):
     list_display = [
         'title', 'slug', 'category', 'is_published',
         'is_featured', 'view_count', 'author'
@@ -187,7 +187,7 @@ class KnowledgeBaseArticleAdmin(admin.ModelAdmin):
     )
 
 
-class ContactReplyInline(admin.TabularInline):
+class ContactReplyInline(TabularInline):
     model = ContactReply
     extra = 0
     readonly_fields = ['user', 'created_at']
@@ -195,7 +195,7 @@ class ContactReplyInline(admin.TabularInline):
 
 
 @admin.register(ContactMessage)
-class ContactMessageAdmin(admin.ModelAdmin):
+class ContactMessageAdmin(ModelAdmin):
     list_display = [
         'name', 'email', 'subject', 'status',
         'assigned_to', 'created_at'

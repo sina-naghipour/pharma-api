@@ -1,8 +1,8 @@
-# accounts/models.py
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.db import models
 from django.core.validators import RegexValidator
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from .managers import UserManager
 
 class User(AbstractBaseUser, PermissionsMixin):
@@ -56,8 +56,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     class Meta:
         db_table = 'accounts_user'
-        verbose_name = 'User'
-        verbose_name_plural = 'Users'
+        verbose_name = 'کاربر'
+        verbose_name_plural = 'کاربران'
         indexes = [
             models.Index(fields=['username']),
             models.Index(fields=['email']),
@@ -124,8 +124,8 @@ class UserProfile(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        verbose_name = 'User Profile'
-        verbose_name_plural = 'User Profiles'
+        verbose_name = 'پروفایل کاربر'
+        verbose_name_plural = 'پروفایل‌های کاربر'
     
     def __str__(self):
         return f"{self.user.username}'s profile"
@@ -177,8 +177,8 @@ class UserAddress(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        verbose_name = 'User Address'
-        verbose_name_plural = 'User Addresses'
+        verbose_name = 'آدرس کاربر'
+        verbose_name_plural = 'آدرس‌های کاربر'
         ordering = ['-is_default', '-created_at']
         indexes = [
             models.Index(fields=['user', 'address_type']),
@@ -270,8 +270,8 @@ class PharmacyLicense(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
-        verbose_name = 'Pharmacy License'
-        verbose_name_plural = 'Pharmacy Licenses'
+        verbose_name = 'مجوز داروخانه'
+        verbose_name_plural = 'مجوزهای داروخانه'
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['license_number']),
