@@ -1,11 +1,10 @@
-# reviews/views.py
 from django.db.models import Q, Count, Avg
 from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status, mixins, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny, IsAuthenticatedOrReadOnly
 from django_filters.rest_framework import DjangoFilterBackend
 from .models import (
     Review, ReviewImage, ReviewVote, ReviewComment,
@@ -28,7 +27,7 @@ from .filters import ReviewFilter, QuestionFilter
 class ReviewViewSet(viewsets.ModelViewSet):
     """ViewSet for managing reviews"""
     queryset = Review.objects.all()
-    permission_classes = [IsAuthenticated, IsOwnerOrReadOnly]
+    permission_classes = [IsAuthenticatedOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_class = ReviewFilter
     search_fields = ['title', 'content']
@@ -46,7 +45,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         """Return appropriate permissions based on action"""
         if self.action == 'create':
-            return [IsAuthenticated(), CanReviewProduct()]
+            return [AllowAny()]
         elif self.action in ['update', 'partial_update', 'destroy']:
             return [IsAuthenticated(), IsOwnerOrReadOnly()]
         elif self.action in ['moderate']:
@@ -71,50 +70,68 @@ class ReviewViewSet(viewsets.ModelViewSet):
         """Set user when creating review"""
         serializer.save()
     
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[AllowAny])
     def vote(self, request, pk=None):
-        """Vote on review helpfulness"""
+        """Vote on review helpfulness (supports authenticated and anonymous users)"""
+        from django.utils.translation import gettext_lazy as __
         review = self.get_object()
         
-        # Don't allow voting on own reviews
-        if review.user == request.user:
+        if request.user.is_authenticated and review.user == request.user:
             return Response(
-                {'error': _("You cannot vote on your own review.")},
+                {'error': __("You cannot vote on your own review.")},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
         serializer = ReviewVoteSerializer(data=request.data)
-        if serializer.is_valid():
-            vote_value = serializer.validated_data['vote']
-            
-            # Check if user has already voted
-            try:
-                vote = ReviewVote.objects.get(review=review, user=request.user)
-                # Update existing vote
-                vote.vote = vote_value
-                vote.save()
-                message = _("Your vote has been updated.")
-            except ReviewVote.DoesNotExist:
-                # Create new vote
-                ReviewVote.objects.create(
-                    review=review,
-                    user=request.user,
-                    vote=vote_value
-                )
-                message = _("Your vote has been recorded.")
-            
-            # Return updated review
-            serializer = self.get_serializer(review)
-            return Response({
-                'message': message,
-                'review': serializer.data
-            })
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        vote_value = serializer.validated_data['vote']
+        
+        if request.user.is_authenticated:
+            user = request.user
+            session_key = None
+            existing_vote = ReviewVote.objects.filter(review=review, user=user).first()
+        else:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            user, _ = User.objects.get_or_create(
+                username='anonymous',
+                defaults={
+                    'email': 'anonymous@example.com',
+                    'first_name': 'ناشناس',
+                    'last_name': '',
+                    'is_active': True
+                }
+            )
+            session_key = request.session.session_key
+            if not session_key:
+                request.session.save()
+                session_key = request.session.session_key
+            existing_vote = ReviewVote.objects.filter(review=review, session_key=session_key).first()
+        
+        if existing_vote:
+            existing_vote.vote = vote_value
+            existing_vote.save()
+            message = __("Your vote has been updated.")
+        else:
+            ReviewVote.objects.create(
+                review=review,
+                user=user,
+                session_key=session_key if not request.user.is_authenticated else None,
+                vote=vote_value
+            )
+            message = __("Your vote has been recorded.")
+        
+        serializer_review = self.get_serializer(review)
+        return Response({
+            'message': message,
+            'review': serializer_review.data
+        })
     
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[AllowAny])
     def add_comment(self, request, pk=None):
-        """Add comment to review"""
+        """Add comment to review (supports anonymous users)"""
         review = self.get_object()
         serializer = ReviewCommentCreateSerializer(
             data=request.data,

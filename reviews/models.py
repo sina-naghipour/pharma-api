@@ -72,6 +72,7 @@ class Review(models.Model):
     )
     rejection_reason = models.TextField(_('Rejection Reason'), blank=True)
     
+    session_key = models.CharField(_('Session Key'), max_length=40, null=True, blank=True)
     class Meta:
         verbose_name = 'نظر'
         verbose_name_plural = 'نظرات'
@@ -83,7 +84,6 @@ class Review(models.Model):
             models.Index(fields=['rating']),
             models.Index(fields=['created_at']),
         ]
-        unique_together = ['product', 'user']
     
     def __str__(self):
         return f"Review by {self.user_display_name} for {self.product.name}"
@@ -157,7 +157,9 @@ class ReviewVote(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='review_votes',
-        verbose_name=_('User')
+        verbose_name=_('User'),
+        null=True,   # allow null for anonymous votes
+        blank=True,
     )
     vote = models.CharField(
         _('Vote'),
@@ -166,19 +168,24 @@ class ReviewVote(models.Model):
     )
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+    session_key = models.CharField(_('Session Key'), max_length=40, null=True, blank=True)
     
     class Meta:
         verbose_name = 'رأی نظر'
         verbose_name_plural = 'آراء نظرات'
-        unique_together = ['review', 'user']
+        # Remove unique_together – uniqueness is handled in the view
         indexes = [
             models.Index(fields=['review']),
             models.Index(fields=['user']),
             models.Index(fields=['vote']),
+            models.Index(fields=['session_key']),
         ]
     
     def __str__(self):
-        return f"{self.user.email} voted {self.vote} on review {self.review.id}"
+        if self.user:
+            return f"{self.user.email} voted {self.vote} on review {self.review.id}"
+        else:
+            return f"Anonymous session voted {self.vote} on review {self.review.id}"
     
     def save(self, *args, **kwargs):
         is_new = self._state.adding
@@ -211,7 +218,6 @@ class ReviewVote(models.Model):
         self.review.save(update_fields=['helpful_votes', 'unhelpful_votes', 'updated_at'])
         super().delete(*args, **kwargs)
 
-
 class ReviewComment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     review = models.ForeignKey(
@@ -230,8 +236,9 @@ class ReviewComment(models.Model):
     is_staff_response = models.BooleanField(_('Staff Response'), default=False)
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
-    is_approved = models.BooleanField(_('Approved'), default=True)
-    
+    is_approved = models.BooleanField(_('Approved'), default=False)
+    session_key = models.CharField(_('Session Key'), max_length=40, null=True, blank=True)
+
     class Meta:
         verbose_name = 'نظر روی نظر'
         verbose_name_plural = 'نظرات روی نظر'

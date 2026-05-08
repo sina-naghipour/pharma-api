@@ -1,6 +1,5 @@
-# products/views.py
 import logging
-from django.db.models import Q, Avg, Count
+from django.db.models import Q, Avg, Count, F
 from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, filters, status, mixins
@@ -45,20 +44,20 @@ class CategoryViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'order', 'created_at']
     ordering = ['order', 'name']
     lookup_field = 'slug'
-    
+
     def get_serializer_class(self):
         """Return appropriate serializer based on action"""
         if self.action == 'list':
             return CategoryListSerializer
         return CategorySerializer
-    
+
     @action(detail=False, methods=['get'])
     def root(self, request):
         """Get root categories (no parent)"""
         root_categories = Category.objects.filter(parent=None)
         serializer = CategorySerializer(root_categories, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def products(self, request, slug=None):
         """Get products in a category"""
@@ -67,23 +66,22 @@ class CategoryViewSet(viewsets.ModelViewSet):
             categories=category,
             is_active=True
         )
-        
-        # Apply filters, search, and ordering
+
         product_filter = ProductFilter(request.GET, queryset=products)
         products = product_filter.qs
-        
+
         page = self.paginate_queryset(products)
         if page is not None:
             serializer = ProductListSerializer(
-                page, 
-                many=True, 
+                page,
+                many=True,
                 context={'request': request}
             )
             return self.get_paginated_response(serializer.data)
-        
+
         serializer = ProductListSerializer(
-            products, 
-            many=True, 
+            products,
+            many=True,
             context={'request': request}
         )
         return Response(serializer.data)
@@ -92,14 +90,13 @@ class CategoryViewSet(viewsets.ModelViewSet):
 class ManufacturerViewSet(viewsets.ModelViewSet):
     """ViewSet for managing manufacturers"""
     queryset = Manufacturer.objects.all()
-    serializer_class = ManufacturerSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'description', 'country']
     ordering_fields = ['name', 'created_at']
     ordering = ['name']
     lookup_field = 'slug'
-    
+
     @action(detail=True, methods=['get'])
     def products(self, request, slug=None):
         """Get products from a manufacturer"""
@@ -108,23 +105,22 @@ class ManufacturerViewSet(viewsets.ModelViewSet):
             manufacturer=manufacturer,
             is_active=True
         )
-        
-        # Apply filters, search, and ordering
+
         product_filter = ProductFilter(request.GET, queryset=products)
         products = product_filter.qs
-        
+
         page = self.paginate_queryset(products)
         if page is not None:
             serializer = ProductListSerializer(
-                page, 
-                many=True, 
+                page,
+                many=True,
                 context={'request': request}
             )
             return self.get_paginated_response(serializer.data)
-        
+
         serializer = ProductListSerializer(
-            products, 
-            many=True, 
+            products,
+            many=True,
             context={'request': request}
         )
         return Response(serializer.data)
@@ -140,17 +136,16 @@ class ProductViewSet(viewsets.ModelViewSet):
     ordering_fields = ['name', 'price', 'created_at', 'stock_quantity']
     ordering = ['-created_at']
     lookup_field = 'slug'
-    
+
     def get_queryset(self):
         """Return queryset based on user and action"""
         queryset = Product.objects.all()
-        
-        # For list and retrieve actions, only show active products to non-admin users
+
         if self.action in ['list', 'retrieve'] and not self.request.user.is_staff:
             queryset = queryset.filter(is_active=True)
-            
+
         return queryset
-    
+
     def get_serializer_class(self):
         """Return appropriate serializer based on action"""
         if self.action == 'list':
@@ -158,13 +153,13 @@ class ProductViewSet(viewsets.ModelViewSet):
         if self.action in ['create', 'update', 'partial_update']:
             return ProductCreateUpdateSerializer
         return ProductDetailSerializer
-    
+
     def get_serializer_context(self):
         """Add request to serializer context"""
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
-    
+
     @action(detail=False, methods=['get'])
     def featured(self, request):
         """Get featured products"""
@@ -172,23 +167,23 @@ class ProductViewSet(viewsets.ModelViewSet):
             is_active=True,
             is_featured=True
         )
-        
+
         page = self.paginate_queryset(featured_products)
         if page is not None:
             serializer = ProductListSerializer(
-                page, 
-                many=True, 
+                page,
+                many=True,
                 context={'request': request}
             )
             return self.get_paginated_response(serializer.data)
-        
+
         serializer = ProductListSerializer(
-            featured_products, 
-            many=True, 
+            featured_products,
+            many=True,
             context={'request': request}
         )
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def on_sale(self, request):
         """Get products on sale"""
@@ -196,84 +191,98 @@ class ProductViewSet(viewsets.ModelViewSet):
             is_active=True,
             compare_price__isnull=False
         ).exclude(compare_price__lte=F('price'))
-        
+
         page = self.paginate_queryset(on_sale_products)
         if page is not None:
             serializer = ProductListSerializer(
-                page, 
-                many=True, 
+                page,
+                many=True,
                 context={'request': request}
             )
             return self.get_paginated_response(serializer.data)
-        
+
         serializer = ProductListSerializer(
-            on_sale_products, 
-            many=True, 
+            on_sale_products,
+            many=True,
             context={'request': request}
         )
         return Response(serializer.data)
-    
-    @action(detail=True, methods=['post'])
+
+    @action(detail=True, methods=['post'], permission_classes=[AllowAny])
     def add_review(self, request, slug=None):
-        """Add a review to a product"""
+        """Add a review to a product (allow anyone, set anonymous if not logged in)"""
         product = self.get_object()
-        
-        # Add product_id to serializer context
+
+        if not request.user.is_authenticated:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            anonymous_user, _ = User.objects.get_or_create(
+                username='anonymous',
+                defaults={
+                    'email': 'anonymous@example.com',
+                    'first_name': 'ناشناس',
+                    'last_name': '',
+                    'is_active': True
+                }
+            )
+            request.user = anonymous_user
+            request.data._mutable = True
+            request.data['is_anonymous'] = True
+            request.data._mutable = False
+
         context = self.get_serializer_context()
         context['product_id'] = product.id
-        
-        serializer = ReviewSerializer(data=request.data, context=context)
+
+        from reviews.serializers import ReviewCreateSerializer
+        serializer = ReviewCreateSerializer(data=request.data, context=context)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     @action(detail=True, methods=['get'])
     def similar(self, request, slug=None):
         """Get similar products"""
         product = self.get_object()
-        
-        # Get products in same categories
+
         similar_products = Product.objects.filter(
             categories__in=product.categories.all(),
             is_active=True
         ).exclude(id=product.id).distinct()
-        
-        # Limit to 10 products
+
         similar_products = similar_products[:10]
-        
+
         serializer = ProductListSerializer(
-            similar_products, 
-            many=True, 
+            similar_products,
+            many=True,
             context={'request': request}
         )
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def variants(self, request, slug=None):
         """Get product variants"""
         product = self.get_object()
         variants = product.variants.filter(is_active=True)
-        
+
         serializer = ProductVariantSerializer(variants, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def reviews(self, request, slug=None):
         """Get product reviews"""
         product = self.get_object()
-        
-        # Only show approved reviews to non-admin users
+
         if not request.user.is_staff:
             reviews = product.reviews.filter(is_approved=True)
         else:
             reviews = product.reviews.all()
-            
+
         page = self.paginate_queryset(reviews)
         if page is not None:
             serializer = ReviewSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
-            
+
         serializer = ReviewSerializer(reviews, many=True)
         return Response(serializer.data)
 
@@ -283,9 +292,8 @@ class ProductImageViewSet(viewsets.ModelViewSet):
     queryset = ProductImage.objects.all()
     serializer_class = ProductImageSerializer
     permission_classes = [IsAdminUser]
-    
+
     def get_queryset(self):
-        """Filter images by product if provided"""
         product_slug = self.request.query_params.get('product', None)
         if product_slug:
             return ProductImage.objects.filter(product__slug=product_slug)
@@ -301,24 +309,23 @@ class BatchViewSet(viewsets.ModelViewSet):
     filterset_fields = ['product']
     ordering_fields = ['expiry_date', 'manufacturing_date', 'created_at']
     ordering = ['expiry_date']
-    
+
     def get_queryset(self):
-        """Filter batches by product if provided"""
         product_slug = self.request.query_params.get('product', None)
         if product_slug:
             return Batch.objects.filter(product__slug=product_slug)
         return Batch.objects.all()
-    
+
     @action(detail=False, methods=['get'])
     def expiring_soon(self, request):
-        """Get batches expiring within 90 days"""
         batches = Batch.objects.filter(
             expiry_date__lte=timezone.now().date() + timezone.timedelta(days=90),
             expiry_date__gt=timezone.now().date()
         )
-        
+
         serializer = BatchSerializer(batches, many=True)
         return Response(serializer.data)
+
 
 
 class ReviewViewSet(mixins.ListModelMixin,
@@ -331,52 +338,54 @@ class ReviewViewSet(mixins.ListModelMixin,
     serializer_class = ReviewSerializer
     permission_classes = [IsOwnerOrAdminOrReadOnly]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    filterset_fields = ['product', 'user', 'rating', 'is_approved']
+    filterset_fields = ['product', 'user', 'rating', 'status']
     ordering_fields = ['created_at', 'rating']
     ordering = ['-created_at']
     
     def get_queryset(self):
-        """Filter reviews based on user permissions"""
+        queryset = Review.objects.all()
+        
+        # Apply product filter from query parameters
+        product_id = self.request.query_params.get('product')
+        if product_id:
+            queryset = queryset.filter(product_id=product_id)
+        
+        # Apply permission filtering
         if self.request.user.is_staff:
-            return Review.objects.all()
+            return queryset
         elif self.request.user.is_authenticated:
-            # Regular users can see all approved reviews + their own
-            return Review.objects.filter(
-                Q(user=self.request.user)
-            )
-        # Anonymous users can only see approved reviews
-        return Review.objects.filter(is_approved=True)
+            return queryset.filter(
+                Q(user=self.request.user) | Q(status=Review.STATUS_APPROVED)
+            ).distinct()
+        return queryset.filter(status=Review.STATUS_APPROVED)
     
     @action(detail=False, methods=['get'])
     def my_reviews(self, request):
-        """Get reviews by current user"""
         if not request.user.is_authenticated:
             return Response(
                 {"error": _("Authentication required")},
                 status=status.HTTP_401_UNAUTHORIZED
             )
-            
         reviews = Review.objects.filter(user=request.user)
-        
         page = self.paginate_queryset(reviews)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
-            
         serializer = self.get_serializer(reviews, many=True)
         return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
-        """Approve a review (admin only)"""
         if not request.user.is_staff:
             return Response(
                 {"error": _("Admin privileges required")},
                 status=status.HTTP_403_FORBIDDEN
             )
-            
         review = self.get_object()
+        review.status = Review.STATUS_APPROVED
         review.save()
-        
         serializer = self.get_serializer(review)
         return Response(serializer.data)
+    
+    
+    

@@ -1,9 +1,10 @@
-# reviews/serializers.py
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
 from django.db.models import Avg
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
+from django.db import IntegrityError
+
 from .models import (
     Review, ReviewImage, ReviewVote, ReviewComment,
     Question, Answer, AnswerVote
@@ -38,13 +39,11 @@ class ReviewCommentSerializer(serializers.ModelSerializer):
         ]
     
     def get_user_display_name(self, obj):
-        """Get user display name"""
         if obj.is_staff_response:
             return f"{obj.user.get_full_name()} ({_('Staff')})"
         return obj.user.get_full_name() or obj.user.email.split('@')[0]
     
     def get_is_author(self, obj):
-        """Check if current user is the author"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.user == request.user
@@ -55,7 +54,7 @@ class ReviewSerializer(serializers.ModelSerializer):
     """Serializer for reviews"""
     user_display_name = serializers.CharField(read_only=True)
     images = ReviewImageSerializer(many=True, read_only=True)
-    comments = ReviewCommentSerializer(many=True, read_only=True)
+    comments = serializers.SerializerMethodField()
     helpfulness_score = serializers.IntegerField(read_only=True)
     is_author = serializers.SerializerMethodField()
     current_user_vote = serializers.SerializerMethodField()
@@ -75,28 +74,27 @@ class ReviewSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'is_author', 'current_user_vote'
         ]
     
+    def get_comments(self, obj):
+        qs = obj.comments.filter(is_approved=True)
+        return ReviewCommentSerializer(qs, many=True, context=self.context).data
+    
     def get_is_author(self, obj):
-        """Check if current user is the author"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.user == request.user
         return False
     
     def get_current_user_vote(self, obj):
-        """Get current user's vote on this review"""
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return None
-        
         try:
             vote = ReviewVote.objects.get(review=obj, user=request.user)
             return vote.vote
         except ReviewVote.DoesNotExist:
             return None
-
-
 class ReviewCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating reviews"""
+    """Serializer for creating reviews with session-based uniqueness for anonymous users"""
     images = serializers.ListField(
         child=serializers.ImageField(),
         required=False,
@@ -107,57 +105,78 @@ class ReviewCreateSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True
     )
-    
+
     class Meta:
         model = Review
         fields = [
             'product', 'rating', 'title', 'content',
             'is_anonymous', 'images', 'image_captions'
         ]
-    
+
     def validate(self, data):
-        """Validate review data"""
-        user = self.context['request'].user
+        request = self.context['request']
+        user = request.user
         product = data['product']
-        
-        # Check if user has already reviewed this product
-        if Review.objects.filter(product=product, user=user).exists():
-            raise serializers.ValidationError({
-                'product': _("You have already reviewed this product.")
-            })
-        
-        # Check if user has purchased this product
-        has_purchased = OrderItem.objects.filter(
-            order__user=user,
-            product=product,
-            order__status__in=['paid', 'preparing', 'shipped', 'delivered']
-        ).exists()
-        
-        data['is_verified_purchase'] = has_purchased
-        
-        # Validate image captions
+        session_key = request.session.session_key
+
+        if user.is_authenticated:
+            if Review.objects.filter(product=product, user=user).exists():
+                raise serializers.ValidationError({
+                    'non_field_errors': _("شما قبلاً برای این محصول نظر داده‌اید.")
+                })
+            has_purchased = OrderItem.objects.filter(
+                order__user=user,
+                product=product,
+                order__status__in=['paid', 'preparing', 'shipped', 'delivered']
+            ).exists()
+            data['is_verified_purchase'] = has_purchased
+            data['session_key'] = None
+        else:
+            if session_key and Review.objects.filter(product=product, session_key=session_key).exists():
+                raise serializers.ValidationError({
+                    'non_field_errors': _("شما قبلاً از این نشست مرورگر برای این محصول نظر داده‌اید.")
+                })
+            data['is_anonymous'] = True
+            data['is_verified_purchase'] = False
+            data['session_key'] = session_key
+
         images = data.get('images', [])
         captions = data.get('image_captions', [])
-        
         if len(captions) > len(images):
             raise serializers.ValidationError({
-                'image_captions': _("You provided more captions than images.")
+                'image_captions': _("تعداد توضیحات تصاویر بیشتر از تعداد تصاویر است.")
             })
-        
+
         return data
-    
+
     def create(self, validated_data):
-        """Create a new review with images"""
         images = validated_data.pop('images', [])
         captions = validated_data.pop('image_captions', [])
-        
-        # Set user from request
-        validated_data['user'] = self.context['request'].user
-        
-        # Create review
-        review = Review.objects.create(**validated_data)
-        
-        # Create review images
+        request = self.context['request']
+
+        if request.user.is_authenticated:
+            validated_data['user'] = request.user
+        else:
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            anonymous_user, _ = User.objects.get_or_create(
+                username='anonymous',
+                defaults={
+                    'email': 'anonymous@example.com',
+                    'first_name': 'ناشناس',
+                    'last_name': '',
+                    'is_active': True
+                }
+            )
+            validated_data['user'] = anonymous_user
+
+        try:
+            review = Review.objects.create(**validated_data)
+        except IntegrityError:
+            raise serializers.ValidationError({
+                'non_field_errors': _("شما قبلاً برای این محصول نظر داده‌اید.")
+            })
+
         for i, image in enumerate(images):
             caption = captions[i] if i < len(captions) else ""
             ReviewImage.objects.create(
@@ -165,10 +184,8 @@ class ReviewCreateSerializer(serializers.ModelSerializer):
                 image=image,
                 caption=caption
             )
-        
+
         return review
-
-
 class ReviewUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating reviews"""
     
@@ -177,13 +194,10 @@ class ReviewUpdateSerializer(serializers.ModelSerializer):
         fields = ['rating', 'title', 'content', 'is_anonymous']
     
     def validate(self, data):
-        """Validate review update"""
-        # Only allow updates if review is not yet approved
         if self.instance.status != Review.STATUS_PENDING:
             raise serializers.ValidationError({
                 'non_field_errors': _("You can only update pending reviews.")
             })
-        
         return data
 
 
@@ -196,27 +210,48 @@ class ReviewVoteSerializer(serializers.ModelSerializer):
 
 
 class ReviewCommentCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating review comments"""
+    """Serializer for creating review comments (supports anonymous users)"""
     
     class Meta:
         model = ReviewComment
         fields = ['content']
     
     def create(self, validated_data):
-        """Create a new review comment"""
         review = self.context['review']
-        user = self.context['request'].user
-        
-        # Set staff response flag if user is staff
-        is_staff_response = user.is_staff
-        
+        request = self.context['request']
+        user = request.user
+        session_key = request.session.session_key
+
+        if user.is_authenticated:
+            comment_user = user
+            is_staff_response = user.is_staff
+            comment_session_key = None
+        else:
+            # Anonymous user – use the dedicated anonymous user
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            comment_user, _ = User.objects.get_or_create(
+                username='anonymous',
+                defaults={
+                    'email': 'anonymous@example.com',
+                    'first_name': 'ناشناس',
+                    'last_name': '',
+                    'is_active': True
+                }
+            )
+            is_staff_response = False
+            comment_session_key = session_key
+            if not comment_session_key:
+                request.session.save()
+                comment_session_key = request.session.session_key
+
         return ReviewComment.objects.create(
             review=review,
-            user=user,
+            user=comment_user,
             content=validated_data['content'],
-            is_staff_response=is_staff_response
+            is_staff_response=is_staff_response,
+            session_key=comment_session_key
         )
-
 
 class QuestionSerializer(serializers.ModelSerializer):
     """Serializer for questions"""
@@ -240,13 +275,10 @@ class QuestionSerializer(serializers.ModelSerializer):
         ]
     
     def get_answers(self, obj):
-        """Get approved answers"""
-        # Only return approved answers
         answers = obj.answers.filter(is_approved=True)
         return AnswerSerializer(answers, many=True, context=self.context).data
     
     def get_is_author(self, obj):
-        """Check if current user is the author"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.user == request.user
@@ -261,10 +293,7 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
         fields = ['product', 'question', 'is_anonymous']
     
     def create(self, validated_data):
-        """Create a new question"""
-        # Set user from request
         validated_data['user'] = self.context['request'].user
-        
         return Question.objects.create(**validated_data)
 
 
@@ -276,13 +305,10 @@ class QuestionUpdateSerializer(serializers.ModelSerializer):
         fields = ['question', 'is_anonymous']
     
     def validate(self, data):
-        """Validate question update"""
-        # Only allow updates if question is not yet approved or answered
         if self.instance.status not in [Question.STATUS_PENDING, Question.STATUS_APPROVED]:
             raise serializers.ValidationError({
                 'non_field_errors': _("You can only update pending or approved questions.")
             })
-        
         return data
 
 
@@ -310,18 +336,15 @@ class AnswerSerializer(serializers.ModelSerializer):
         ]
     
     def get_is_author(self, obj):
-        """Check if current user is the author"""
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             return obj.user == request.user
         return False
     
     def get_current_user_vote(self, obj):
-        """Get current user's vote on this answer"""
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return None
-        
         try:
             vote = AnswerVote.objects.get(answer=obj, user=request.user)
             return vote.vote
@@ -337,23 +360,16 @@ class AnswerCreateSerializer(serializers.ModelSerializer):
         fields = ['answer', 'is_anonymous']
     
     def create(self, validated_data):
-        """Create a new answer"""
         question = self.context['question']
         user = self.context['request'].user
-        
-        # Set staff answer flag if user is staff
         is_staff_answer = user.is_staff
-        
-        # Create answer
-        answer = Answer.objects.create(
+        return Answer.objects.create(
             question=question,
             user=user,
             answer=validated_data['answer'],
             is_anonymous=validated_data['is_anonymous'],
             is_staff_answer=is_staff_answer
         )
-        
-        return answer
 
 
 class AnswerUpdateSerializer(serializers.ModelSerializer):
@@ -381,23 +397,16 @@ class ProductRatingSummarySerializer(serializers.Serializer):
     
     @classmethod
     def get_summary(cls, product_id):
-        """Get rating summary for a product"""
         product = get_object_or_404(Product, id=product_id)
-        
-        # Get approved reviews only
         reviews = Review.objects.filter(
             product=product,
             status=Review.STATUS_APPROVED
         )
-        
-        # Calculate average rating
         review_count = reviews.count()
         if review_count > 0:
             average_rating = reviews.aggregate(Avg('rating'))['rating__avg']
         else:
             average_rating = 0
-        
-        # Calculate rating distribution
         distribution = {
             '5': reviews.filter(rating=5).count(),
             '4': reviews.filter(rating=4).count(),
@@ -405,7 +414,6 @@ class ProductRatingSummarySerializer(serializers.Serializer):
             '2': reviews.filter(rating=2).count(),
             '1': reviews.filter(rating=1).count(),
         }
-        
         return {
             'product_id': product.id,
             'average_rating': round(average_rating, 1) if average_rating else 0,
