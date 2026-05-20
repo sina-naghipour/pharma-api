@@ -77,13 +77,18 @@ class UserSerializer(serializers.ModelSerializer):
     """Serializer for user data"""
     profile = serializers.SerializerMethodField()
     full_name = serializers.SerializerMethodField()
+    is_profile_complete = serializers.SerializerMethodField()
     
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_number', 
-                 'user_type', 'is_verified', 'date_joined', 'profile', 'full_name')
+                 'user_type', 'is_verified', 'date_joined', 'profile', 'full_name', 'is_profile_complete')
         read_only_fields = ('id', 'user_type', 'is_verified', 'date_joined')
-    
+    def get_is_profile_complete(self, obj):
+        """Check if user has filled required profile fields"""
+        has_name = bool(obj.first_name and obj.last_name)
+        has_real_email = bool(obj.email)
+        return has_name and has_real_email
     def get_profile(self, obj):
         try:
             profile = obj.profile

@@ -23,4 +23,7 @@ urlpatterns = [
     path('auth/verify/', TokenVerifyView.as_view(), name='token_verify'),
     # Legacy Logout
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
+    path('auth/request-otp/', views.UserViewSet.as_view({'post': 'request_otp'}), name='request_otp'),
+    path('auth/verify-otp/', views.UserViewSet.as_view({'post': 'verify_otp'}), name='verify_otp'),
+    path('auth/set_password_with_otp/', views.UserViewSet.as_view({'post': 'set_password_with_otp'}), name='set_password_with_otp'),
 ]

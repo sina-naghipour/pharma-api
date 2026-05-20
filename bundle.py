@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Bundle React/FastAPI Application
-Creates a complete code bundle of a React or FastAPI application
+Bundle Django Application
+Creates a complete code bundle of a Django application
 """
 
 import os
@@ -10,28 +10,33 @@ from pathlib import Path
 from datetime import datetime
 import re
 
-def should_skip_react(path: Path) -> bool:
-    """Check if file/directory should be skipped for React/FastAPI projects"""
+def should_skip_django(path: Path) -> bool:
+    """Check if file/directory should be skipped for Django projects"""
     skip_patterns = [
         # Python/Backend patterns
         '__pycache__', '.venv', 'venv', 'env', 
         '*.pyc', '*.pyo', '*.pyd', '*.so', '.egg-info',
-        'alembic/versions', 'migrations',
+        'migrations',  # Django migration files (can be excluded)
+        'alembic/versions',  # For any SQLAlchemy
+        'static',
+        'db.sqlite3',
+        # Django static/media
+        'staticfiles', 'media', 'static/collected',
+        'static/uploads', 'media/uploads',
         
-        # React/Node patterns
-        'node_modules', 'build', 'dist', '.next', 'out',
-        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
-        'npm-debug.log*', 'yarn-debug.log*', 'yarn-error.log*',
+        # Node modules if frontend inside Django
+        'node_modules', 'package-lock.json', 'yarn.lock',
         
         # Git and IDE
         '.git', '.idea', '.vscode', '.DS_Store',
         
-        # Testing
+        # Testing & coverage
         '.pytest_cache', '.coverage', 'htmlcov', '.tox', '.mypy_cache',
-        'coverage', '.nyc_output', 'jest-coverage',
+        'coverage', '.nyc_output',
         
         # Environment and temp
-        '.env.local', '.env.development.local', '.env.test.local', '.env.production.local',
+        '.env', '*.env',  # Skip env files for security
+        '.env.local', '.env.development', '.env.production',
         'temp', 'tmp', 'bundle_', 'backup*',
         
         # Static assets (binary files)
@@ -41,35 +46,29 @@ def should_skip_react(path: Path) -> bool:
         # Logs and databases
         '*.log', '*.sqlite', '*.db',
         
-        # Config files (usually sensitive or generated)
-        '.env', '*.env',  # Skip env files for security
+        # Config files (usually sensitive)
         'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
         
         # Build artifacts
         '*.map', '*.min.js', '*.min.css',
         
         # Bundle output files
-        'fastapi_bundle.txt', 'react_bundle.txt', 'bundle.py',
+        'django_bundle.txt', 'bundle.py',
         
         # Documentation (optional - remove if you want to include)
         '*.md', 'README.md',
         
-        # React specific
-        'public', 'static/media', 'static/fonts',
-        'service-worker.js', 'sw.js', 'manifest.json',
-        
-        # Config files (remove if you want to include)
-        'webpack.config.js', 'vite.config.js', 'next.config.js',
-        'tailwind.config.js', 'postcss.config.js',
+        # Django specific - sometimes excluded
+        'static/admin', 'static/rest_framework',
     ]
     
     path_str = str(path)
     path_lower = path_str.lower()
     
-    # Skip hidden files (except .env files which we already skip)
+    # Skip hidden files (except .gitignore which is useful)
     if any(part.startswith('.') for part in path.parts):
         if path.name != '.' and path.name != '..':
-            if not path.name.startswith('.env') and not path.name == '.gitignore':
+            if not path.name == '.gitignore':
                 return True
     
     for pattern in skip_patterns:
@@ -85,20 +84,16 @@ def get_file_extension_priority(file_path: Path) -> int:
     """Get priority for file ordering in bundle"""
     ext_priority = {
         '.py': 1,           # Python files first
-        '.js': 2,           # JavaScript files
-        '.jsx': 2,          # React JSX files
-        '.ts': 2,           # TypeScript files
-        '.tsx': 2,          # React TSX files
+        '.html': 2,         # Django templates
         '.css': 3,          # CSS files
-        '.scss': 3,         # SCSS files
-        '.txt': 4,          # Text files
-        '.json': 5,         # Config files
-        '.yml': 5,          # YAML files
-        '.yaml': 5,
-        '.ini': 5,
-        '.toml': 5,
-        '.cfg': 5,
-        '.html': 6,         # HTML files
+        '.js': 4,           # JavaScript files
+        '.txt': 5,          # Text files
+        '.json': 6,         # Config files
+        '.yml': 6,
+        '.yaml': 6,
+        '.ini': 6,
+        '.toml': 6,
+        '.cfg': 6,
         '.sh': 7,           # Shell scripts
         '.sql': 8,          # SQL files
     }
@@ -114,107 +109,107 @@ def get_file_extension_priority(file_path: Path) -> int:
 def read_file_content(file_path: Path) -> str:
     """Read file content with proper encoding"""
     try:
-        # Try UTF-8 first
         with open(file_path, 'r', encoding='utf-8') as f:
             return f.read()
     except UnicodeDecodeError:
         try:
-            # Try Latin-1 as fallback
             with open(file_path, 'r', encoding='latin-1') as f:
                 return f.read()
         except:
-            # For binary files
             file_size = file_path.stat().st_size
             return f"[BINARY FILE - {file_size:,} bytes]"
     except Exception as e:
         return f"[ERROR READING FILE: {str(e)}]"
 
-def extract_react_info(content: str) -> dict:
-    """Extract React specific information from file content"""
+def extract_django_info(content: str) -> dict:
+    """Extract Django specific information from file content"""
     info = {
-        'components': [],
-        'hooks': [],
-        'routes': [],
-        'api_calls': []
+        'apps': [],
+        'models': [],
+        'views': [],
+        'urls': [],
+        'forms': [],
+        'serializers': [],
+        'admin_classes': [],
+        'commands': [],
     }
     
-    # Look for React component definitions
-    component_patterns = [
-        r'function\s+(\w+)\s*\([^)]*\)\s*\{',
-        r'const\s+(\w+)\s*=\s*\([^)]*\)\s*=>\s*\{',
-        r'class\s+(\w+)\s+extends\s+(?:React\.)?Component',
-        r'export\s+default\s+function\s+(\w+)',
-        r'export\s+default\s+(\w+)',
-    ]
+    # Look for Django app definitions (apps.py)
+    app_config_pattern = r'class\s+(\w+Config)\s*\(\s*AppConfig\s*\)'
+    for match in re.finditer(app_config_pattern, content):
+        info['apps'].append(match.group(1).replace('Config', ''))
     
-    for pattern in component_patterns:
+    # Look for model classes (models.py)
+    model_pattern = r'class\s+(\w+)\s*\(\s*models\.Model\s*\)'
+    for match in re.finditer(model_pattern, content):
+        info['models'].append(match.group(1))
+    
+    # Look for view functions/classes (views.py)
+    view_func_pattern = r'def\s+(\w+)\s*\(\s*request\s*,'
+    view_class_pattern = r'class\s+(\w+)\s*\(\s*(?:View|TemplateView|ListView|DetailView|CreateView|UpdateView|DeleteView|FormView)\s*\)'
+    for match in re.finditer(view_func_pattern, content):
+        info['views'].append(match.group(1))
+    for match in re.finditer(view_class_pattern, content):
+        info['views'].append(match.group(1))
+    
+    # Look for URL patterns (urls.py)
+    url_patterns = [
+        r'path\s*\(\s*["\']([^"\']+)["\']',
+        r're_path\s*\(\s*["\']([^"\']+)["\']',
+        r'url\s*\(\s*["\']([^"\']+)["\']',
+    ]
+    for pattern in url_patterns:
         for match in re.finditer(pattern, content):
-            info['components'].append(match.group(1))
+            info['urls'].append(match.group(1))
     
-    # Look for React hooks
-    hook_patterns = [
-        r'useState\(', r'useEffect\(', r'useContext\(', r'useReducer\(',
-        r'useCallback\(', r'useMemo\(', r'useRef\(', r'useImperativeHandle\(',
-        r'useLayoutEffect\(', r'useDebugValue\(', r'useDeferredValue\(',
-        r'useTransition\(', r'useId\(', r'useSyncExternalStore\(',
-    ]
+    # Look for form classes (forms.py)
+    form_pattern = r'class\s+(\w+)\s*\(\s*forms\.(?:ModelForm|Form)\s*\)'
+    for match in re.finditer(form_pattern, content):
+        info['forms'].append(match.group(1))
     
-    content_lower = content.lower()
-    for hook in hook_patterns:
-        if hook.lower() in content_lower:
-            info['hooks'].append(hook.replace('(', ''))
+    # Look for DRF serializers (serializers.py)
+    serializer_pattern = r'class\s+(\w+)\s*\(\s*serializers\.(?:ModelSerializer|Serializer)\s*\)'
+    for match in re.finditer(serializer_pattern, content):
+        info['serializers'].append(match.group(1))
     
-    # Look for React Router routes
-    route_patterns = [
-        r'<Route\s+path=["\']([^"\']+)["\']',
-        r'path:\s*["\']([^"\']+)["\']',
-    ]
+    # Look for admin classes (admin.py)
+    admin_pattern = r'class\s+(\w+)\s*\(\s*admin\.(?:ModelAdmin|StackedInline|TabularInline)\s*\)'
+    for match in re.finditer(admin_pattern, content):
+        info['admin_classes'].append(match.group(1))
     
-    for pattern in route_patterns:
-        for match in re.finditer(pattern, content):
-            info['routes'].append(match.group(1))
+    # Look for custom management commands (management/commands/*.py)
+    command_pattern = r'class\s+Command\s*\(\s*BaseCommand\s*\)'
+    if re.search(command_pattern, content):
+        # Extract command name from file name logic will be handled in main loop
+        info['commands'].append('found')
     
-    # Look for API calls (fetch, axios)
-    api_patterns = [
-        r'fetch\s*\(\s*["\']([^"\']+)["\']',
-        r'axios\.(get|post|put|delete|patch)\s*\(\s*["\']([^"\']+)["\']',
-        r'\.get\s*\(\s*["\']([^"\']+)["\']',
-        r'\.post\s*\(\s*["\']([^"\']+)["\']',
-    ]
-    
-    for pattern in api_patterns:
-        for match in re.finditer(pattern, content):
-            url = match.group(1) if len(match.groups()) == 1 else match.group(2)
-            if url and url.startswith(('/', 'http')):
-                info['api_calls'].append(url)
-    
-    # Remove duplicates by converting to set and back
-    info['components'] = list(set(info['components']))
-    info['routes'] = list(set(info['routes']))
-    info['api_calls'] = list(set(info['api_calls']))
-    info['hooks'] = list(set(info['hooks']))
+    # Remove duplicates
+    for key in info:
+        info[key] = list(set(info[key]))
     
     return info
 
-def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool = True) -> Path:
+def bundle_django_app(output_file: str = "django_bundle.txt", include_docs: bool = True) -> Path:
     """
-    Bundle a React application into a single text file
+    Bundle a Django application into a single text file
     """
     current_dir = Path.cwd()
     output_path = current_dir / output_file
     
-    print(f"🚀 Bundling React Application")
+    print(f"🚀 Bundling Django Application")
     print(f"📁 Directory: {current_dir}")
     print(f"📄 Output: {output_path}")
     print("-" * 60)
     
-    # Check if this looks like a React project
-    react_files = ['package.json', 'src']
-    has_react = any((current_dir / f).exists() for f in react_files)
+    # Check if this looks like a Django project
+    django_files = ['manage.py', 'settings.py', 'requirements.txt']
+    has_django = any((current_dir / f).exists() for f in django_files) or \
+                 any((current_dir / 'app' / f).exists() for f in ['settings.py']) or \
+                 (current_dir / 'requirements.txt').exists()
     
-    if not has_react:
-        print("⚠️  Warning: This doesn't look like a React project")
-        print("   No package.json or src directory found in root")
+    if not has_django:
+        print("⚠️  Warning: This doesn't look like a Django project")
+        print("   No manage.py, settings.py, or requirements.txt found")
     
     file_count = 0
     skipped_files = []
@@ -223,18 +218,21 @@ def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool =
     # Collect project info
     project_info = {
         'name': current_dir.name,
-        'total_files': 0,
-        'components': [],
-        'hooks': [],
-        'routes': [],
-        'api_calls': []
+        'apps': [],
+        'models': [],
+        'views': [],
+        'urls': [],
+        'forms': [],
+        'serializers': [],
+        'admin_classes': [],
+        'commands': [],
     }
     
     try:
         with open(output_path, 'w', encoding='utf-8') as bundle:
             # Write header
             bundle.write("=" * 80 + "\n")
-            bundle.write("REACT APPLICATION BUNDLE\n")
+            bundle.write("DJANGO APPLICATION BUNDLE\n")
             bundle.write("=" * 80 + "\n")
             bundle.write(f"Project: {current_dir.name}\n")
             bundle.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -252,15 +250,13 @@ def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool =
                 root_path = Path(root)
                 
                 # Filter out directories to skip
-                dirs[:] = [d for d in dirs if not should_skip_react(root_path / d)]
+                dirs[:] = [d for d in dirs if not should_skip_django(root_path / d)]
                 
                 for file in files:
                     file_path = root_path / file
-                    if not should_skip_react(file_path):
-                        # Skip the output file itself
+                    if not should_skip_django(file_path):
                         if file_path == output_path:
                             continue
-                        
                         all_files.append(file_path)
             
             # Sort files by priority and then alphabetically
@@ -270,23 +266,21 @@ def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool =
             for file_path in all_files:
                 try:
                     relative_path = file_path.relative_to(current_dir)
-                    
-                    # Calculate indentation for structure display
                     depth = len(relative_path.parents)
                     indent = "  " * depth
                     
                     # Write structure info
                     if include_docs:
-                        if file_path.suffix in ['.js', '.jsx', '.ts', '.tsx']:
-                            bundle.write(f"{indent}📄 {relative_path}\n")
-                        elif file_path.suffix in ['.css', '.scss', '.sass']:
-                            bundle.write(f"{indent}🎨 {relative_path}\n")
-                        elif file_path.name == 'package.json':
-                            bundle.write(f"{indent}📦 {relative_path}\n")
-                        elif file_path.suffix in ['.yml', '.yaml', '.json']:
-                            bundle.write(f"{indent}⚙️  {relative_path}\n")
+                        if file_path.suffix == '.py':
+                            bundle.write(f"{indent}🐍 {relative_path}\n")
                         elif file_path.suffix == '.html':
                             bundle.write(f"{indent}🌐 {relative_path}\n")
+                        elif file_path.suffix in ['.css', '.scss']:
+                            bundle.write(f"{indent}🎨 {relative_path}\n")
+                        elif file_path.suffix == '.js':
+                            bundle.write(f"{indent}📜 {relative_path}\n")
+                        elif file_path.name in ['requirements.txt', 'Pipfile', 'pyproject.toml']:
+                            bundle.write(f"{indent}📦 {relative_path}\n")
                         else:
                             bundle.write(f"{indent}📄 {relative_path}\n")
                     
@@ -298,7 +292,6 @@ def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool =
                         file_size = file_path.stat().st_size
                         bundle.write(f"SIZE: {file_size:,} bytes\n")
                         total_size += file_size
-                        
                         modified_time = datetime.fromtimestamp(file_path.stat().st_mtime)
                         bundle.write(f"MODIFIED: {modified_time}\n")
                     except:
@@ -310,13 +303,18 @@ def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool =
                     content = read_file_content(file_path)
                     bundle.write(content)
                     
-                    # Extract React info from JS/TS files
-                    if file_path.suffix in ['.js', '.jsx', '.ts', '.tsx']:
-                        file_info = extract_react_info(content)
-                        project_info['components'].extend(file_info['components'])
-                        project_info['hooks'].extend(file_info['hooks'])
-                        project_info['routes'].extend(file_info['routes'])
-                        project_info['api_calls'].extend(file_info['api_calls'])
+                    # Extract Django info from Python files
+                    if file_path.suffix == '.py':
+                        file_info = extract_django_info(content)
+                        for key in project_info:
+                            if key in file_info:
+                                project_info[key].extend(file_info[key])
+                    
+                    # Special handling for management commands
+                    if 'management/commands' in str(file_path) and file_path.suffix == '.py':
+                        cmd_name = file_path.stem
+                        if cmd_name not in ['__init__', 'base']:
+                            project_info['commands'].append(cmd_name)
                     
                     if content and not content.endswith('\n'):
                         bundle.write('\n')
@@ -335,30 +333,52 @@ def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool =
             bundle.write(f"Total files bundled: {file_count}\n")
             bundle.write(f"Total size: {total_size:,} bytes\n")
             
-            if project_info['components']:
-                bundle.write(f"\n⚛️  REACT COMPONENTS ({len(set(project_info['components']))}):\n")
-                for component in sorted(set(project_info['components']))[:20]:
-                    bundle.write(f"  • {component}\n")
-                if len(set(project_info['components'])) > 20:
-                    bundle.write(f"  ... and {len(set(project_info['components'])) - 20} more\n")
+            if project_info['apps']:
+                bundle.write(f"\n📱 DJANGO APPS ({len(set(project_info['apps']))}):\n")
+                for app in sorted(set(project_info['apps'])):
+                    bundle.write(f"  • {app}\n")
             
-            if project_info['hooks']:
-                bundle.write(f"\n🪝 REACT HOOKS USED:\n")
-                for hook in sorted(set(project_info['hooks'])):
-                    bundle.write(f"  • {hook}\n")
+            if project_info['models']:
+                bundle.write(f"\n🗄️  MODELS ({len(set(project_info['models']))}):\n")
+                for model in sorted(set(project_info['models']))[:20]:
+                    bundle.write(f"  • {model}\n")
+                if len(set(project_info['models'])) > 20:
+                    bundle.write(f"  ... and {len(set(project_info['models'])) - 20} more\n")
             
-            if project_info['routes']:
-                bundle.write(f"\n🧭 ROUTES ({len(set(project_info['routes']))}):\n")
-                for route in sorted(set(project_info['routes']))[:15]:
-                    bundle.write(f"  • {route}\n")
+            if project_info['views']:
+                bundle.write(f"\n👁️  VIEWS ({len(set(project_info['views']))}):\n")
+                for view in sorted(set(project_info['views']))[:20]:
+                    bundle.write(f"  • {view}\n")
+                if len(set(project_info['views'])) > 20:
+                    bundle.write(f"  ... and {len(set(project_info['views'])) - 20} more\n")
             
-            if project_info['api_calls']:
-                bundle.write(f"\n🌐 API ENDPOINTS ({len(set(project_info['api_calls']))}):\n")
-                for api in sorted(set(project_info['api_calls']))[:15]:
-                    bundle.write(f"  • {api}\n")
+            if project_info['urls']:
+                bundle.write(f"\n🔗 URL PATTERNS ({len(set(project_info['urls']))}):\n")
+                for url in sorted(set(project_info['urls']))[:15]:
+                    bundle.write(f"  • {url}\n")
             
-            bundle.write(f"\n📁 Directory structure:\n")
-            for file_path in all_files[:20]:  # Show first 20 files in structure
+            if project_info['forms']:
+                bundle.write(f"\n📝 FORMS ({len(set(project_info['forms']))}):\n")
+                for form in sorted(set(project_info['forms']))[:10]:
+                    bundle.write(f"  • {form}\n")
+            
+            if project_info['serializers']:
+                bundle.write(f"\n📦 SERIALIZERS ({len(set(project_info['serializers']))}):\n")
+                for ser in sorted(set(project_info['serializers']))[:10]:
+                    bundle.write(f"  • {ser}\n")
+            
+            if project_info['admin_classes']:
+                bundle.write(f"\n🖥️  ADMIN CLASSES ({len(set(project_info['admin_classes']))}):\n")
+                for admin in sorted(set(project_info['admin_classes']))[:10]:
+                    bundle.write(f"  • {admin}\n")
+            
+            if project_info['commands']:
+                bundle.write(f"\n⚙️  MANAGEMENT COMMANDS:\n")
+                for cmd in sorted(set(project_info['commands'])):
+                    bundle.write(f"  • {cmd}\n")
+            
+            bundle.write(f"\n📁 Directory structure (first 20 files):\n")
+            for file_path in all_files[:20]:
                 relative_path = file_path.relative_to(current_dir)
                 depth = len(relative_path.parents)
                 indent = "  " * depth
@@ -385,8 +405,9 @@ def bundle_react_app(output_file: str = "react_bundle.txt", include_docs: bool =
     # Print summary to console
     print(f"\n✅ Successfully bundled {file_count} files")
     print(f"📏 Total size: {total_size:,} bytes")
-    print(f"⚛️  Components found: {len(set(project_info['components']))}")
-    print(f"🌐 API calls found: {len(set(project_info['api_calls']))}")
+    print(f"📱 Django apps: {len(set(project_info['apps']))}")
+    print(f"🗄️  Models: {len(set(project_info['models']))}")
+    print(f"👁️  Views: {len(set(project_info['views']))}")
     
     if skipped_files:
         print(f"⚠️  Skipped {len(skipped_files)} files")
@@ -400,12 +421,12 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description='Bundle a React/FastAPI application into a single text file'
+        description='Bundle a Django application into a single text file'
     )
     parser.add_argument(
         '-o', '--output',
-        default='react_bundle.txt',
-        help='Output filename (default: react_bundle.txt)'
+        default='django_bundle.txt',
+        help='Output filename (default: django_bundle.txt)'
     )
     parser.add_argument(
         '--include-docs',
@@ -421,15 +442,15 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("React/FastAPI Application Bundle Generator")
+    print("Django Application Bundle Generator")
     print("=" * 60)
     
-    result = bundle_react_app(
+    result = bundle_django_app(
         output_file=args.output,
         include_docs=not args.minimal
     )
     
-    print("\n🎉 Bundle created successfully!")
+    print("\n🎉 Django bundle created successfully!")
     print(f"📁 Open with: cat {args.output}")
     print(f"📋 Or copy with: cat {args.output} | clip (Windows) | pbcopy (Mac)")
 

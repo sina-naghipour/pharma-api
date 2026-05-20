@@ -28,7 +28,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         },
     )
     
-    email = models.EmailField(unique=True)
+    email = models.EmailField(unique=False, blank=True, null=True)
     first_name = models.CharField(max_length=30, blank=True)
     last_name = models.CharField(max_length=30, blank=True)
     phone_number = models.CharField(
@@ -52,7 +52,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     objects = UserManager()
     
     USERNAME_FIELD = 'username'
-    REQUIRED_FIELDS = ['email', 'first_name', 'last_name']
+    REQUIRED_FIELDS = ['phone_number', 'first_name', 'last_name']
     
     class Meta:
         db_table = 'accounts_user'
@@ -61,6 +61,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         indexes = [
             models.Index(fields=['username']),
             models.Index(fields=['email']),
+            models.Index(fields=['phone_number']),
             models.Index(fields=['user_type']),
             models.Index(fields=['is_active']),
         ]
@@ -299,3 +300,17 @@ class PharmacyLicense(models.Model):
             delta = self.license_expiry_date - today
             return delta.days
         return None
+
+class OTP(models.Model):
+    phone_number = models.CharField(max_length=15, unique=True, db_index=True)
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    attempt_count = models.IntegerField(default=0)
+    is_verified = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"OTP for {self.phone_number}"
+
+    def is_valid(self):
+        return not self.is_verified and timezone.now() < self.expires_at

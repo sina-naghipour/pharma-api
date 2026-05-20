@@ -6,6 +6,7 @@ from .serializers import BlogPostListSerializer, BlogPostDetailSerializer
 
 class BlogPostViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = BlogPost.objects.filter(is_published=True)
+    lookup_field = 'slug'
     permission_classes = [AllowAny]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['category__slug']

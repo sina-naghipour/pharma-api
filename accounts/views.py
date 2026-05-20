@@ -14,14 +14,18 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from .models import User, UserProfile, UserAddress, PharmacyLicense
+from django.core.exceptions import ObjectDoesNotExist
+from rest_framework_simplejwt.tokens import RefreshToken
+from .models import User, UserProfile, UserAddress, PharmacyLicense, OTP
 from .serializers import (
     UserSerializer, UserCreateSerializer, UserProfileSerializer,
     UserAddressSerializer, PharmacyLicenseSerializer, PasswordChangeSerializer,
     PasswordResetSerializer, PasswordResetConfirmSerializer,
-    UserLoginSerializer  # اضافه کردن این serializer جدید
+    UserLoginSerializer
 )
+from django.core.cache import cache
 from .permissions import IsOwnerOrAdmin
+from .otp_service import send_verification_code
 
 class UserViewSet(viewsets.ModelViewSet):
     """ViewSet for managing users"""
@@ -128,60 +132,74 @@ class UserViewSet(viewsets.ModelViewSet):
             'message': 'Password changed successfully',
             'token': token.key
         })
-    
+        
     @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
     def password_reset(self, request):
-        """Request password reset - can use email or username"""
+        """Request password reset – with 2‑minute cooldown"""
         serializer = PasswordResetSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         identifier = serializer.validated_data.get('email') or serializer.validated_data.get('username')
-        
+        # Normalize identifier: email -> lowercase, username unchanged
+        canonical_identifier = identifier.lower() if '@' in identifier else identifier
+
+        cooldown_seconds = 120  # 2 minutes
+        cache_key = f'pwd_reset_cooldown_{canonical_identifier}'
+
+        # Check cooldown
+        last_request = cache.get(cache_key)
+        if last_request:
+            elapsed = (timezone.now() - last_request).total_seconds()
+            if elapsed < cooldown_seconds:
+                remaining = int(cooldown_seconds - elapsed)
+                return Response({
+                    'error': f'لطفاً {remaining} ثانیه دیگر صبر کنید.',
+                    'remaining_seconds': remaining
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Try to find user (silent fail for security)
+        user = None
         try:
-            # Try to find user by email first, then by username
             if '@' in identifier:
-                user = User.objects.get(email=identifier, is_active=True)
+                user = User.objects.get(email__iexact=identifier, is_active=True)
             else:
                 user = User.objects.get(username=identifier, is_active=True)
-            
-            # Generate reset token
+        except User.DoesNotExist:
+            pass
+
+        if user:
             token = default_token_generator.make_token(user)
             uid = urlsafe_base64_encode(force_bytes(user.pk))
-            
-            # Send reset email
             self.send_password_reset_email(user, uid, token)
-            
-            return Response({
-                'message': 'Password reset email sent'
-            })
-        except User.DoesNotExist:
-            # Don't reveal if user exists or not
-            return Response({
-                'message': 'Password reset email sent'
-            })
-    
+            # Store current time in cache (expires after cooldown_seconds)
+            cache.set(cache_key, timezone.now(), timeout=cooldown_seconds)
+
+        # Always return the same success message (no user enumeration)
+        return Response({'message': 'لینک بازیابی رمز عبور به ایمیل شما ارسال شد'})
+
+
     def send_password_reset_email(self, user, uid, token):
-        """Send password reset email"""
+        """Send password reset email in Persian"""
         try:
             reset_url = f"{getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')}/reset-password/{uid}/{token}/"
             
-            subject = 'Password Reset - Pharma API'
+            subject = 'بازیابی رمز عبور - داروخانه دکتر نقی پور'
             message = f"""
-            Dear {user.first_name or user.username},
-            
-            You requested a password reset for your Pharma API account.
-            
-            Username: {user.username}
-            
-            Please click the link below to reset your password:
+            {user.first_name or user.username} عزیز،
+
+            درخواست بازیابی رمز عبور برای حساب کاربری شما ثبت شده است.
+
+            نام کاربری: {user.username}
+
+            برای تنظیم رمز عبور جدید، روی لینک زیر کلیک کنید:
             {reset_url}
-            
-            This link will expire in 24 hours.
-            
-            If you didn't request this reset, please ignore this email.
-            
-            Best regards,
-            Pharma API Team
+
+            این لینک تا ۲۴ ساعت معتبر است.
+
+            اگر درخواستی برای بازیابی رمز عبور ندادید، لطفاً این ایمیل را نادیده بگیرید.
+
+            با احترام،
+            تیم داروخانه دکتر نقی پور
             """
             
             send_mail(
@@ -193,7 +211,7 @@ class UserViewSet(viewsets.ModelViewSet):
             )
         except Exception as e:
             print(f"Failed to send password reset email: {e}")
-    
+
     @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
     def password_reset_confirm(self, request):
         """Confirm password reset"""
@@ -239,6 +257,164 @@ class UserViewSet(viewsets.ModelViewSet):
             'message': 'Account deactivated successfully'
         })
 
+    # ========== SMS OTP LOGIN ==========
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def request_otp(self, request):
+        """Request OTP code via SMS"""
+        phone = request.data.get('phone_number')
+        if not phone:
+            return Response(
+                {'error': 'شماره موبایل الزامی است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            send_verification_code(phone)
+            return Response(
+                {'message': 'کد تایید به شماره شما ارسال شد'},
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def verify_otp(self, request):
+        """Verify OTP and login/register user"""
+        phone = request.data.get('phone_number')
+        code = request.data.get('code')
+        if not phone or not code:
+            return Response(
+                {'error': 'شماره موبایل و کد تایید الزامی است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except ObjectDoesNotExist:
+            return Response(
+                {'error': 'درخواست کد تایید یافت نشد'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if not otp.is_valid():
+            return Response(
+                {'error': 'کد تایید منقضی شده یا قبلاً استفاده شده است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if otp.code != code:
+            otp.attempt_count += 1
+            otp.save(update_fields=['attempt_count'])
+            remaining = 5 - otp.attempt_count
+            if remaining <= 0:
+                otp.delete()
+                return Response(
+                    {'error': 'تعداد تلاش نامعتبر بیش از حد مجاز. لطفاً دوباره درخواست کد دهید.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            return Response(
+                {'error': f'کد نامعتبر. {remaining} تلاش باقی مانده.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Mark OTP as verified
+        otp.is_verified = True
+        otp.save(update_fields=['is_verified'])
+
+        # Find existing user by phone number, or create new
+        user = User.objects.filter(phone_number=phone).first()
+        if not user:
+            user = User.objects.create_user(
+                username=phone,
+                email='',
+                phone_number=phone,
+                first_name='',
+                last_name='',
+                user_type='customer',
+                is_active=True
+            )
+        else:
+            # Ensure phone_number is set (should be, but for safety)
+            if not user.phone_number:
+                user.phone_number = phone
+                user.save(update_fields=['phone_number'])
+
+        # Generate JWT tokens (simplejwt)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+            'user': UserSerializer(user).data
+        })
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def set_password_with_otp(self, request):
+        """
+        Change or set password after OTP verification.
+        Requires: phone_number, code, new_password, confirm_password
+        """
+        phone = request.data.get('phone_number')
+        code = request.data.get('code')
+        new_password = request.data.get('new_password')
+        confirm_password = request.data.get('confirm_password')
+
+        if not all([phone, code, new_password, confirm_password]):
+            return Response(
+                {'error': 'همه فیلدها الزامی است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if new_password != confirm_password:
+            return Response(
+                {'error': 'رمز عبور و تکرار آن مطابقت ندارند'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Verify OTP
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except OTP.DoesNotExist:
+            return Response(
+                {'error': 'درخواست کد تایید یافت نشد'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if not otp.is_valid():
+            return Response(
+                {'error': 'کد تایید منقضی شده یا قبلاً استفاده شده است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if otp.code != code:
+            otp.attempt_count += 1
+            otp.save(update_fields=['attempt_count'])
+            remaining = 5 - otp.attempt_count
+            if remaining <= 0:
+                otp.delete()
+                return Response(
+                    {'error': 'تعداد تلاش نامعتبر بیش از حد مجاز. لطفاً دوباره درخواست کد دهید.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            return Response(
+                {'error': f'کد نامعتبر. {remaining} تلاش باقی مانده.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Mark OTP as used
+        otp.is_verified = True
+        otp.save(update_fields=['is_verified'])
+
+        # Set new password
+        user = request.user
+        user.set_password(new_password)
+        user.save()
+
+        # Invalidate all existing tokens (optional but recommended)
+        Token.objects.filter(user=user).delete()
+
+        return Response({'message': 'رمز عبور با موفقیت تغییر کرد'})
 
 # Custom Serializer for Username Authentication
 class CustomAuthTokenSerializer(auth_serializers.AuthTokenSerializer):
@@ -582,6 +758,8 @@ class LoginView(APIView):
         # برای دیباگ
         print(f"Login validation errors: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class RegisterView(APIView):
     """Simple registration view for frontend"""
     permission_classes = [permissions.AllowAny]

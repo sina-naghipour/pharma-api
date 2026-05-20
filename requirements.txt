@@ -34,3 +34,4 @@ django-unfold
 
 # Payments (optional – for Stripe integration)
 # stripe>=7.8,<8.0
+smsir-python

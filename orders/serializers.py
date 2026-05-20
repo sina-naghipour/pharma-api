@@ -416,6 +416,16 @@ class CreateOrderSerializer(serializers.Serializer):
                 order.coupon_discount = cart.discount_amount
                 order.save(update_fields=['coupon_code', 'coupon_discount'])
             
+                from promotions.models import CouponUsage
+                CouponUsage.objects.create(
+                    coupon=cart.coupon,
+                    user=user,
+                    order=order,
+                    discount_amount=cart.discount_amount
+                )
+                cart.coupon.used_count += 1
+                cart.coupon.save(update_fields=['used_count'])
+                
             # Create order items from cart items
             for cart_item in cart.items.all():
                 # Get product price

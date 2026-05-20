@@ -233,7 +233,27 @@ UNFOLD = {
     # ],
 }
 
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+    }
+}
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'your_email@gmail.com'
+EMAIL_HOST_PASSWORD = 'your_app_password'
+DEFAULT_FROM_EMAIL = 'noreply@pharma.com'
+
 LANGUAGE_CODE = 'fa'
 USE_I18N = True
 USE_L10N = True 
 USE_TZ = True
+
+SMS_IR_API_KEY = config('SMS_IR_API_KEY', default='')
+SMS_IR_VERIFY_TEMPLATE_ID = config('SMS_IR_VERIFY_TEMPLATE_ID', default='')
+MOCK_SMS = config('MOCK_SMS', default=False, cast=bool)
+SMS_IR_SANDBOX = config('SMS_IR_SANDBOX', default=False, cast=bool)
+SMS_IR_LINE_NUMBER = config('SMS_IR_LINE_NUMBER', default=0, cast=int)
