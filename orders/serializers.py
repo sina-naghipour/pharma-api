@@ -13,6 +13,12 @@ from .models import (
 
 from payments.models import Payment
 
+
+from accounts.models import User
+from accounts.serializers import UserSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+
+
 class CartItemSerializer(serializers.ModelSerializer):
     """Serializer for cart items"""
     product_details = serializers.SerializerMethodField()
@@ -678,3 +684,155 @@ class CreateRefundSerializer(serializers.Serializer):
             return refund
 
 
+class GuestCheckoutSerializer(serializers.Serializer):
+    # Guest personal info - phone is the unique identifier
+    guest_phone = serializers.CharField(required=True, max_length=15)
+    guest_first_name = serializers.CharField(required=True, max_length=30)
+    guest_last_name = serializers.CharField(required=True, max_length=30)
+    guest_email = serializers.EmailField(required=False, allow_blank=True)
+    
+    # Shipping address
+    address_first_name = serializers.CharField(required=True, max_length=50)
+    address_last_name = serializers.CharField(required=True, max_length=50)
+    address_line_1 = serializers.CharField(required=True, max_length=255)
+    address_line_2 = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    city = serializers.CharField(required=True, max_length=100)
+    state_province = serializers.CharField(required=True, max_length=100)
+    postal_code = serializers.CharField(required=True, max_length=20)
+    phone_number = serializers.CharField(required=False, allow_blank=True, max_length=15)
+    
+    # Order details
+    payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES, required=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    
+    def validate(self, data):
+        if not data.get('guest_phone'):
+            raise serializers.ValidationError({'guest_phone': 'شماره موبایل الزامی است'})
+        return data
+    
+    def create(self, validated_data):
+        request = self.context['request']
+        session_key = request.session.session_key
+        if not session_key:
+            request.session.save()
+            session_key = request.session.session_key
+
+        phone = validated_data['guest_phone']
+        email = validated_data.get('guest_email', '')
+        
+        # Find or create user by phone number
+        user = User.objects.filter(phone_number=phone).first()
+        if not user:
+            user = User.objects.create_user(
+                username=phone,
+                email=email if email else f'{phone}@placeholder.com',
+                phone_number=phone,
+                first_name=validated_data['guest_first_name'],
+                last_name=validated_data['guest_last_name'],
+                user_type='customer',
+                is_active=True
+            )
+        else:
+            # Update user info if fields are empty
+            if not user.first_name and validated_data.get('guest_first_name'):
+                user.first_name = validated_data['guest_first_name']
+            if not user.last_name and validated_data.get('guest_last_name'):
+                user.last_name = validated_data['guest_last_name']
+            if email and not user.email:
+                user.email = email
+            if not user.phone_number and phone:
+                user.phone_number = phone
+            user.save()
+
+        # Anonymous cart by session
+        cart = Cart.objects.filter(session_id=session_key, user__isnull=True, is_active=True).first()
+        if not cart or not cart.items.exists():
+            raise serializers.ValidationError({'non_field_errors': 'سبد خرید خالی است'})
+
+        # Transfer cart to user
+        cart.user = user
+        cart.session_id = None
+        cart.save()
+
+        # Create shipping address (UserAddress model)
+        from accounts.models import UserAddress
+        address = UserAddress.objects.create(
+            user=user,
+            address_type='shipping',
+            first_name=validated_data['address_first_name'],
+            last_name=validated_data['address_last_name'],
+            address_line_1=validated_data['address_line_1'],
+            address_line_2=validated_data.get('address_line_2', ''),
+            city=validated_data['city'],
+            state_province=validated_data['state_province'],
+            postal_code=validated_data['postal_code'],
+            phone_number=validated_data.get('phone_number', ''),
+            is_default=True
+        )
+
+        # Build address JSON as expected by Order model
+        address_json = {
+            'recipient_name': f"{address.first_name} {address.last_name}",
+            'recipient_phone': address.phone_number,
+            'province': address.state_province,
+            'city': address.city,
+            'district': address.address_line_2 or '',
+            'street_address': address.address_line_1,
+            'postal_code': address.postal_code,
+            'type': address.address_type
+        }
+
+        # Create order
+        order = Order.objects.create(
+            user=user,
+            status=Order.STATUS_PENDING,
+            shipping_address=address_json,
+            billing_address=address_json,  # same for billing
+            payment_method=validated_data['payment_method'],
+            subtotal=cart.subtotal,
+            discount_amount=cart.discount_amount,
+            total_amount=cart.total,
+            customer_notes=validated_data.get('notes', '')
+        )
+
+        # Create order items from cart items
+        for cart_item in cart.items.all():
+            if cart_item.variant:
+                unit_price = cart_item.variant.calculated_price
+            else:
+                unit_price = cart_item.product.price
+            OrderItem.objects.create(
+                order=order,
+                product=cart_item.product,
+                variant=cart_item.variant,
+                product_name=cart_item.product.name,
+                variant_name=cart_item.variant.name if cart_item.variant else '',
+                sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
+                quantity=cart_item.quantity,
+                unit_price=unit_price,
+                subtotal=unit_price * cart_item.quantity,
+                total_price=unit_price * cart_item.quantity,
+                requires_prescription=cart_item.product.prescription_required == 'required'
+            )
+            # Reduce inventory
+            if cart_item.product.track_inventory:
+                if cart_item.variant:
+                    cart_item.variant.stock_quantity -= cart_item.quantity
+                    cart_item.variant.save(update_fields=['stock_quantity'])
+                else:
+                    cart_item.product.stock_quantity -= cart_item.quantity
+                    cart_item.product.save(update_fields=['stock_quantity'])
+
+        cart.is_active = False
+        cart.save(update_fields=['is_active'])
+
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from accounts.serializers import UserSerializer
+
+        refresh = RefreshToken.for_user(user)
+        return {
+            'order': order,
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data
+        }

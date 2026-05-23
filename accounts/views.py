@@ -28,7 +28,9 @@ from .permissions import IsOwnerOrAdmin
 from .otp_service import send_verification_code
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-
+from django.core.cache import cache
+from .otp_service import send_verification_code
+import uuid
 class UserViewSet(viewsets.ModelViewSet):
     """ViewSet for managing users"""
     queryset = User.objects.all()
@@ -426,6 +428,78 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return Response({'message': 'رمز عبور با موفقیت تغییر کرد'})
 
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def register_request_otp(self, request):
+        """Step 1: Send OTP to phone for registration"""
+        phone = request.data.get('phone_number')
+        if not phone:
+            return Response({'error': 'شماره موبایل الزامی است'}, status=400)
+        
+        # Generate a temporary registration ID
+        reg_id = str(uuid.uuid4())
+        # Store registration data in cache (expires in 10 minutes)
+        cache.set(f'reg_{reg_id}', {'phone': phone, 'data': request.data}, timeout=600)
+        
+        try:
+            send_verification_code(phone)
+            return Response({'reg_id': reg_id, 'message': 'کد تایید ارسال شد'})
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def register_verify_otp(self, request):
+        """Step 2: Verify OTP and create user"""
+        reg_id = request.data.get('reg_id')
+        code = request.data.get('code')
+        if not reg_id or not code:
+            return Response({'error': 'شناسه ثبت نام و کد تایید الزامی است'}, status=400)
+        
+        # Get registration data from cache
+        reg_data = cache.get(f'reg_{reg_id}')
+        if not reg_data:
+            return Response({'error': 'ثبت نام منقضی شده یا نامعتبر است'}, status=400)
+        
+        phone = reg_data['phone']
+        # Verify OTP
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except OTP.DoesNotExist:
+            return Response({'error': 'درخواست کد تایید یافت نشد'}, status=404)
+        
+        if not otp.is_valid() or otp.code != code:
+            return Response({'error': 'کد نامعتبر یا منقضی شده'}, status=400)
+        
+        # Mark OTP as used
+        otp.is_verified = True
+        otp.save()
+        
+        # Create user
+        user_data = reg_data['data']
+        # Check if phone already exists
+        if User.objects.filter(phone_number=phone).exists():
+            return Response({'error': 'این شماره موبایل قبلاً ثبت شده است'}, status=400)
+        
+        user = User.objects.create_user(
+            username=user_data['username'],
+            email=user_data.get('email', ''),
+            phone_number=phone,
+            first_name=user_data.get('first_name', ''),
+            last_name=user_data.get('last_name', ''),
+            password=user_data['password'],
+            user_type='customer',
+            is_active=True
+        )
+        
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        # Delete cache
+        cache.delete(f'reg_{reg_id}')
+        
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data
+        })
 
 # Custom Serializer for Username Authentication
 class CustomAuthTokenSerializer(auth_serializers.AuthTokenSerializer):
