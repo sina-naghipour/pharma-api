@@ -1,4 +1,6 @@
 import logging
+import uuid
+from django.core.cache import cache
 from django.db import transaction
 from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
@@ -6,6 +8,7 @@ from rest_framework import viewsets, status, mixins, filters, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
 from django_filters.rest_framework import DjangoFilterBackend
 from products.models import Product, ProductVariant
 from .models import (
@@ -22,6 +25,9 @@ from .serializers import (
 )
 from payments.serializers import PaymentSerializer
 from promotions.models import Coupon, CouponUsage
+from accounts.models import OTP, User
+from accounts.serializers import UserSerializer
+from accounts.otp_service import send_verification_code
 
 from .permissions import IsOrderOwner, IsAdminOrReadOnly
 from .filters import OrderFilter
@@ -270,9 +276,188 @@ class CartViewSet(viewsets.GenericViewSet):
                 item.save()
         cart_from.delete()
 
+    # ==================== GUEST CHECKOUT WITH OTP ====================
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def guest_checkout_request_otp(self, request):
+        """Step 1: Send OTP and store guest data + cart ID in cache"""
+        phone = request.data.get('phone')
+        guest_data = request.data.get('guest_data')
+        
+        if not phone:
+            return Response({'error': 'شماره موبایل الزامی است'}, status=status.HTTP_400_BAD_REQUEST)
+        if not guest_data:
+            return Response({'error': 'داده‌های ناقص'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get the current anonymous cart
+        cart = self.get_or_create_cart()
+        if not cart or not cart.items.exists():
+            return Response({'error': 'سبد خرید خالی است'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        reg_id = str(uuid.uuid4())
+        cache.set(f'guest_checkout_{reg_id}', {
+            'phone': phone,
+            'guest_data': guest_data,
+            'cart_id': cart.id,
+            'session_key': self.request.session.session_key
+        }, timeout=600)
+        
+        try:
+            send_verification_code(phone)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        return Response({'reg_id': reg_id, 'message': 'کد تایید ارسال شد'})
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def guest_checkout_verify_otp(self, request):
+        """Step 2: Verify OTP, create user & order, return tokens"""
+        reg_id = request.data.get('reg_id')
+        code = request.data.get('code')
+        
+        if not reg_id or not code:
+            return Response({'error': 'شناسه و کد تایید الزامی است'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        cached = cache.get(f'guest_checkout_{reg_id}')
+        if not cached:
+            return Response({'error': 'زمان جلسه به اتمام رسیده است. لطفاً دوباره اقدام کنید.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        
+        phone = cached['phone']
+        guest_data = cached['guest_data']
+        cart_id = cached['cart_id']
+        session_key = cached['session_key']
+        
+        # Verify OTP
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except OTP.DoesNotExist:
+            return Response({'error': 'درخواست کد تایید یافت نشد'}, status=status.HTTP_404_NOT_FOUND)
+        
+        if not otp.is_valid() or otp.code != code:
+            return Response({'error': 'کد نامعتبر یا منقضی شده'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Mark OTP as verified
+        otp.is_verified = True
+        otp.save()
+        
+        # Find or create user by phone
+        user = User.objects.filter(phone_number=phone).first()
+        if not user:
+            user = User.objects.create_user(
+                username=phone,
+                email=guest_data.get('guest_email', ''),
+                phone_number=phone,
+                first_name=guest_data['guest_first_name'],
+                last_name=guest_data['guest_last_name'],
+                user_type='customer',
+                is_active=True
+            )
+        else:
+            if not user.first_name and guest_data.get('guest_first_name'):
+                user.first_name = guest_data['guest_first_name']
+            if not user.last_name and guest_data.get('guest_last_name'):
+                user.last_name = guest_data['guest_last_name']
+            if guest_data.get('guest_email') and not user.email:
+                user.email = guest_data['guest_email']
+            user.save()
+        
+        # Retrieve the cart (must still exist)
+        try:
+            cart = Cart.objects.get(id=cart_id, session_id=session_key, user__isnull=True, is_active=True)
+        except Cart.DoesNotExist:
+            return Response({'error': 'سبد خرید یافت نشد'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Transfer cart to user
+        cart.user = user
+        cart.session_id = None
+        cart.save()
+        
+        # Create shipping address
+        from accounts.models import UserAddress
+        address = UserAddress.objects.create(
+            user=user,
+            address_type='shipping',
+            first_name=guest_data['address_first_name'],
+            last_name=guest_data['address_last_name'],
+            address_line_1=guest_data['address_line_1'],
+            address_line_2=guest_data.get('address_line_2', ''),
+            city=guest_data['city'],
+            state_province=guest_data['state_province'],
+            postal_code=guest_data['postal_code'],
+            phone_number=guest_data.get('phone_number', ''),
+            is_default=True
+        )
+        
+        # Build address JSON
+        address_json = {
+            'recipient_name': f"{address.first_name} {address.last_name}",
+            'recipient_phone': address.phone_number,
+            'province': address.state_province,
+            'city': address.city,
+            'district': address.address_line_2 or '',
+            'street_address': address.address_line_1,
+            'postal_code': address.postal_code,
+            'type': address.address_type
+        }
+        
+        # Create order
+        order = Order.objects.create(
+            user=user,
+            status=Order.STATUS_PENDING,
+            shipping_address=address_json,
+            billing_address=address_json,
+            payment_method=guest_data['payment_method'],
+            subtotal=cart.subtotal,
+            discount_amount=cart.discount_amount,
+            total_amount=cart.total,
+            customer_notes=guest_data.get('notes', '')
+        )
+        
+        # Create order items
+        for cart_item in cart.items.all():
+            if cart_item.variant:
+                unit_price = cart_item.variant.calculated_price
+            else:
+                unit_price = cart_item.product.price
+            OrderItem.objects.create(
+                order=order,
+                product=cart_item.product,
+                variant=cart_item.variant,
+                product_name=cart_item.product.name,
+                variant_name=cart_item.variant.name if cart_item.variant else '',
+                sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
+                quantity=cart_item.quantity,
+                unit_price=unit_price,
+                subtotal=unit_price * cart_item.quantity,
+                total_price=unit_price * cart_item.quantity,
+                requires_prescription=cart_item.product.prescription_required == 'required'
+            )
+            # Reduce inventory
+            if cart_item.product.track_inventory:
+                if cart_item.variant:
+                    cart_item.variant.stock_quantity -= cart_item.quantity
+                    cart_item.variant.save(update_fields=['stock_quantity'])
+                else:
+                    cart_item.product.stock_quantity -= cart_item.quantity
+                    cart_item.product.save(update_fields=['stock_quantity'])
+        
+        cart.is_active = False
+        cart.save(update_fields=['is_active'])
+        
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        cache.delete(f'guest_checkout_{reg_id}')
+        
+        return Response({
+            'order_id': order.id,
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data
+        }, status=status.HTTP_201_CREATED)
+
     @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
     def guest_checkout(self, request):
-        """Guest checkout – creates user, transfers cart, places order, returns tokens"""
+        """Guest checkout – creates user, transfers cart, places order, returns tokens (no OTP)"""
         serializer = GuestCheckoutSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             result = serializer.save()
@@ -283,6 +468,7 @@ class CartViewSet(viewsets.GenericViewSet):
                 'user': result['user']
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 class OrderViewSet(viewsets.ModelViewSet):
     """ViewSet for managing orders"""
@@ -317,11 +503,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         if serializer.is_valid():
             order = serializer.save()
-            
-            # Return order details
             detail_serializer = OrderDetailSerializer(order)
             return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
-        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['post'])
@@ -332,21 +515,13 @@ class OrderViewSet(viewsets.ModelViewSet):
             data=request.data,
             context={'order': order}
         )
-        
         if serializer.is_valid():
             reason = serializer.validated_data.get('reason', '')
             try:
                 order.cancel(reason)
-                return Response(
-                    {'message': _('Order cancelled successfully')},
-                    status=status.HTTP_200_OK
-                )
+                return Response({'message': _('Order cancelled successfully')}, status=status.HTTP_200_OK)
             except ValueError as e:
-                return Response(
-                    {'error': str(e)},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['get'])
@@ -385,7 +560,6 @@ class ShipmentViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
     
     def get_queryset(self):
-        """Get shipments based on user role"""
         user = self.request.user
         if user.is_staff:
             return Shipment.objects.all()
@@ -405,31 +579,22 @@ class RefundViewSet(mixins.CreateModelMixin,
     ordering = ['-requested_at']
     
     def get_queryset(self):
-        """Get refunds based on user role"""
         user = self.request.user
         if user.is_staff:
             return Refund.objects.all()
         return Refund.objects.filter(order__user=user)
     
     def get_serializer_class(self):
-        """Return appropriate serializer based on action"""
         if self.action == 'create':
             return CreateRefundSerializer
         return RefundSerializer
     
     def create(self, request, *args, **kwargs):
-        """Create refund request"""
-        serializer = self.get_serializer(
-            data=request.data,
-            context={'request': request}
-        )
+        serializer = self.get_serializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             refund = serializer.save()
-            
-            # Return refund details
             detail_serializer = RefundSerializer(refund)
             return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
-        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -446,7 +611,6 @@ class PaymentViewSet(mixins.RetrieveModelMixin,
     ordering = ['-created_at']
     
     def get_queryset(self):
-        """Get payments based on user role"""
         user = self.request.user
         if user.is_staff:
             return Payment.objects.all()
@@ -454,22 +618,11 @@ class PaymentViewSet(mixins.RetrieveModelMixin,
     
     @action(detail=True, methods=['post'])
     def process_payment(self, request, pk=None):
-        """Process payment (placeholder for payment gateway integration)"""
         if not request.user.is_staff:
-            return Response(
-                {'error': _('Permission denied')},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
+            return Response({'error': _('Permission denied')}, status=status.HTTP_403_FORBIDDEN)
         payment = self.get_object()
-        
-        # This is a placeholder for payment processing
-        # In a real application, this would integrate with a payment gateway
-        
-        # Simulate successful payment
         payment.status = Payment.STATUS_COMPLETED
         payment.transaction_id = f"SIMULATED-{payment.id}"
         payment.save()
-        
         serializer = self.get_serializer(payment)
         return Response(serializer.data)
