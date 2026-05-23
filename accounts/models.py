@@ -5,6 +5,8 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from .managers import UserManager
 
+import uuid
+from django.conf import settings
 class User(AbstractBaseUser, PermissionsMixin):
     """Custom user model"""
     USER_TYPES = [
@@ -150,7 +152,8 @@ class UserAddress(models.Model):
         ('both', 'Both'),
     ]
     
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='addresses')
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='addresses')
     address_type = models.CharField(max_length=10, choices=ADDRESS_TYPES, default='shipping')
     
     # Address fields
@@ -210,7 +213,6 @@ class UserAddress(models.Model):
                 is_default=True
             ).exclude(pk=self.pk).update(is_default=False)
         super().save(*args, **kwargs)
-
 
 class PharmacyLicense(models.Model):
     """Pharmacy license information for pharmacy users"""

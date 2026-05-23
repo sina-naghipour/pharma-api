@@ -26,6 +26,8 @@ from .serializers import (
 from django.core.cache import cache
 from .permissions import IsOwnerOrAdmin
 from .otp_service import send_verification_code
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 class UserViewSet(viewsets.ModelViewSet):
     """ViewSet for managing users"""
@@ -349,10 +351,10 @@ class UserViewSet(viewsets.ModelViewSet):
             'user': UserSerializer(user).data
         })
 
-    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
     def set_password_with_otp(self, request):
         """
-        Change or set password after OTP verification.
+        Change or set password after OTP verification (no authentication required).
         Requires: phone_number, code, new_password, confirm_password
         """
         phone = request.data.get('phone_number')
@@ -406,15 +408,24 @@ class UserViewSet(viewsets.ModelViewSet):
         otp.is_verified = True
         otp.save(update_fields=['is_verified'])
 
+        # Find user by phone number (not from request.user)
+        try:
+            user = User.objects.get(phone_number=phone)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'کاربری با این شماره موبایل یافت نشد'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
         # Set new password
-        user = request.user
         user.set_password(new_password)
         user.save()
 
-        # Invalidate all existing tokens (optional but recommended)
+        # Invalidate existing auth tokens (optional)
         Token.objects.filter(user=user).delete()
 
         return Response({'message': 'رمز عبور با موفقیت تغییر کرد'})
+
 
 # Custom Serializer for Username Authentication
 class CustomAuthTokenSerializer(auth_serializers.AuthTokenSerializer):
@@ -777,3 +788,14 @@ class RegisterView(APIView):
             }, status=status.HTTP_201_CREATED)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        # Add user data to the response
+        user_serializer = UserSerializer(self.user)
+        data['user'] = user_serializer.data
+        return data
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
