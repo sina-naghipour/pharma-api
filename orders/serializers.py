@@ -378,11 +378,19 @@ class CreateOrderSerializer(serializers.Serializer):
                 'non_field_errors': _("Prescription is required for some items in your cart.")
             })
         
-        # Check if any item is out of stock
-        if cart.has_out_of_stock_items:
-            raise serializers.ValidationError({
-                'non_field_errors': _("Some items in your cart are out of stock.")
-            })
+        # Check if any item is out of stock (basic check without lock)
+        for item in cart.items.all():
+            variant = item.variant
+            product = item.product
+            required = item.quantity
+            if variant and variant.track_inventory and variant.stock_quantity < required:
+                raise serializers.ValidationError({
+                    'non_field_errors': _(f"موجودی کافی برای {variant.name} وجود ندارد.")
+                })
+            elif not variant and product.track_inventory and product.stock_quantity < required:
+                raise serializers.ValidationError({
+                    'non_field_errors': _(f"موجودی کافی برای {product.name} وجود ندارد.")
+                })
         
         # Add validated objects to data
         data['cart'] = cart
@@ -392,7 +400,7 @@ class CreateOrderSerializer(serializers.Serializer):
         return data
     
     def create(self, validated_data):
-        """Create order from cart"""
+        """Create order from cart with stock locking"""
         cart = validated_data['cart']
         user = self.context['request'].user
         shipping_address = validated_data['shipping_address']
@@ -401,6 +409,34 @@ class CreateOrderSerializer(serializers.Serializer):
         customer_notes = validated_data.get('customer_notes', '')
         
         with transaction.atomic():
+            # Lock product/variant rows to prevent race conditions
+            product_ids = []
+            variant_ids = []
+            for item in cart.items.all():
+                if item.variant:
+                    variant_ids.append(item.variant.id)
+                else:
+                    product_ids.append(item.product.id)
+            
+            if product_ids:
+                Product.objects.select_for_update().filter(id__in=product_ids)
+            if variant_ids:
+                ProductVariant.objects.select_for_update().filter(id__in=variant_ids)
+            
+            # Double-check stock after locking (in case of changes during the request)
+            for item in cart.items.all():
+                variant = item.variant
+                product = item.product
+                required = item.quantity
+                if variant and variant.track_inventory and variant.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {variant.name} وجود ندارد."
+                    )
+                elif not variant and product.track_inventory and product.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {product.name} وجود ندارد."
+                    )
+            
             # Create order
             order = Order.objects.create(
                 user=user,
@@ -410,7 +446,7 @@ class CreateOrderSerializer(serializers.Serializer):
                 payment_method=payment_method,
                 subtotal=cart.subtotal,
                 discount_amount=cart.discount_amount,
-                total_amount=cart.total,          # ✅ fixed field name
+                total_amount=cart.total,
                 customer_notes=customer_notes,
                 prescription_file=cart.prescription_file,
                 prescription_verified=cart.prescription_verified
@@ -421,7 +457,7 @@ class CreateOrderSerializer(serializers.Serializer):
                 order.coupon_code = cart.coupon.code
                 order.coupon_discount = cart.discount_amount
                 order.save(update_fields=['coupon_code', 'coupon_discount'])
-            
+                
                 from promotions.models import CouponUsage
                 CouponUsage.objects.create(
                     coupon=cart.coupon,
@@ -431,16 +467,14 @@ class CreateOrderSerializer(serializers.Serializer):
                 )
                 cart.coupon.used_count += 1
                 cart.coupon.save(update_fields=['used_count'])
-                
+            
             # Create order items from cart items
             for cart_item in cart.items.all():
-                # Get product price
                 if cart_item.variant:
                     unit_price = cart_item.variant.calculated_price
                 else:
                     unit_price = cart_item.product.price
                 
-                # Create order item (compute totals inline, avoid variable)
                 OrderItem.objects.create(
                     order=order,
                     product=cart_item.product,
@@ -451,11 +485,11 @@ class CreateOrderSerializer(serializers.Serializer):
                     quantity=cart_item.quantity,
                     unit_price=unit_price,
                     subtotal=unit_price * cart_item.quantity,
-                    total_price=unit_price * cart_item.quantity,   # ✅ fixed: total_price
+                    total_price=unit_price * cart_item.quantity,
                     requires_prescription=cart_item.product.prescription_required == 'required'
                 )
                 
-                # Update product inventory
+                # Reduce inventory
                 if cart_item.product.track_inventory:
                     if cart_item.variant:
                         cart_item.variant.stock_quantity -= cart_item.quantity
@@ -467,25 +501,8 @@ class CreateOrderSerializer(serializers.Serializer):
             # Deactivate cart
             cart.is_active = False
             cart.save(update_fields=['is_active'])
-            # TODO payment later.
-            # # Create payment record for online payments
-            # if payment_method == Order.PAYMENT_ONLINE:
-            #     Payment.objects.create(
-            #         order=order,
-            #         amount=order.total_amount,
-            #         method='online',      # adjust to your actual choice value
-            #         status='pending'
-            #     )
-            # elif payment_method == Order.PAYMENT_COD:
-            #     Payment.objects.create(
-            #         order=order,
-            #         amount=order.total_amount,
-            #         method='cod',         # adjust to your actual choice value
-            #         status='pending'
-            #     )
             
             return order
-        
     def _address_to_json(self, address):
         """Convert address model to JSON representation"""
         return {
@@ -683,15 +700,12 @@ class CreateRefundSerializer(serializers.Serializer):
             
             return refund
 
-
 class GuestCheckoutSerializer(serializers.Serializer):
-    # Guest personal info - phone is the unique identifier
     guest_phone = serializers.CharField(required=True, max_length=15)
     guest_first_name = serializers.CharField(required=True, max_length=30)
     guest_last_name = serializers.CharField(required=True, max_length=30)
     guest_email = serializers.EmailField(required=False, allow_blank=True)
     
-    # Shipping address
     address_first_name = serializers.CharField(required=True, max_length=50)
     address_last_name = serializers.CharField(required=True, max_length=50)
     address_line_1 = serializers.CharField(required=True, max_length=255)
@@ -701,7 +715,6 @@ class GuestCheckoutSerializer(serializers.Serializer):
     postal_code = serializers.CharField(required=True, max_length=20)
     phone_number = serializers.CharField(required=False, allow_blank=True, max_length=15)
     
-    # Order details
     payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES, required=True)
     notes = serializers.CharField(required=False, allow_blank=True)
     
@@ -733,7 +746,6 @@ class GuestCheckoutSerializer(serializers.Serializer):
                 is_active=True
             )
         else:
-            # Update user info if fields are empty
             if not user.first_name and validated_data.get('guest_first_name'):
                 user.first_name = validated_data['guest_first_name']
             if not user.last_name and validated_data.get('guest_last_name'):
@@ -748,91 +760,123 @@ class GuestCheckoutSerializer(serializers.Serializer):
         cart = Cart.objects.filter(session_id=session_key, user__isnull=True, is_active=True).first()
         if not cart or not cart.items.exists():
             raise serializers.ValidationError({'non_field_errors': 'سبد خرید خالی است'})
-
-        # Transfer cart to user
-        cart.user = user
-        cart.session_id = None
-        cart.save()
-
-        # Create shipping address (UserAddress model)
-        from accounts.models import UserAddress
-        address = UserAddress.objects.create(
-            user=user,
-            address_type='shipping',
-            first_name=validated_data['address_first_name'],
-            last_name=validated_data['address_last_name'],
-            address_line_1=validated_data['address_line_1'],
-            address_line_2=validated_data.get('address_line_2', ''),
-            city=validated_data['city'],
-            state_province=validated_data['state_province'],
-            postal_code=validated_data['postal_code'],
-            phone_number=validated_data.get('phone_number', ''),
-            is_default=True
-        )
-
-        # Build address JSON as expected by Order model
-        address_json = {
-            'recipient_name': f"{address.first_name} {address.last_name}",
-            'recipient_phone': address.phone_number,
-            'province': address.state_province,
-            'city': address.city,
-            'district': address.address_line_2 or '',
-            'street_address': address.address_line_1,
-            'postal_code': address.postal_code,
-            'type': address.address_type
-        }
-
-        # Create order
-        order = Order.objects.create(
-            user=user,
-            status=Order.STATUS_PENDING,
-            shipping_address=address_json,
-            billing_address=address_json,  # same for billing
-            payment_method=validated_data['payment_method'],
-            subtotal=cart.subtotal,
-            discount_amount=cart.discount_amount,
-            total_amount=cart.total,
-            customer_notes=validated_data.get('notes', '')
-        )
-
-        # Create order items from cart items
-        for cart_item in cart.items.all():
-            if cart_item.variant:
-                unit_price = cart_item.variant.calculated_price
-            else:
-                unit_price = cart_item.product.price
-            OrderItem.objects.create(
-                order=order,
-                product=cart_item.product,
-                variant=cart_item.variant,
-                product_name=cart_item.product.name,
-                variant_name=cart_item.variant.name if cart_item.variant else '',
-                sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
-                quantity=cart_item.quantity,
-                unit_price=unit_price,
-                subtotal=unit_price * cart_item.quantity,
-                total_price=unit_price * cart_item.quantity,
-                requires_prescription=cart_item.product.prescription_required == 'required'
-            )
-            # Reduce inventory
-            if cart_item.product.track_inventory:
-                if cart_item.variant:
-                    cart_item.variant.stock_quantity -= cart_item.quantity
-                    cart_item.variant.save(update_fields=['stock_quantity'])
+        
+        # Transfer cart to user (do before stock check to lock, but lock uses the items)
+        # However, we need the cart items to remain the same; we'll lock after cart transfer but before order.
+        # Actually we can lock the products/variants before transferring the cart.
+        # To keep it simple, lock using the items from the anonymous cart before transferring.
+        with transaction.atomic():
+            # Lock product/variant rows
+            product_ids = []
+            variant_ids = []
+            for item in cart.items.all():
+                if item.variant:
+                    variant_ids.append(item.variant.id)
                 else:
-                    cart_item.product.stock_quantity -= cart_item.quantity
-                    cart_item.product.save(update_fields=['stock_quantity'])
-
-        cart.is_active = False
-        cart.save(update_fields=['is_active'])
-
-        from rest_framework_simplejwt.tokens import RefreshToken
-        from accounts.serializers import UserSerializer
-
-        refresh = RefreshToken.for_user(user)
-        return {
-            'order': order,
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
-            'user': UserSerializer(user).data
-        }
+                    product_ids.append(item.product.id)
+            
+            if product_ids:
+                Product.objects.select_for_update().filter(id__in=product_ids)
+            if variant_ids:
+                ProductVariant.objects.select_for_update().filter(id__in=variant_ids)
+            
+            # Check stock after lock
+            for item in cart.items.all():
+                variant = item.variant
+                product = item.product
+                required = item.quantity
+                if variant and variant.track_inventory and variant.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {variant.name} وجود ندارد."
+                    )
+                elif not variant and product.track_inventory and product.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {product.name} وجود ندارد."
+                    )
+            
+            # Transfer cart to user
+            cart.user = user
+            cart.session_id = None
+            cart.save()
+            
+            # Create shipping address
+            from accounts.models import UserAddress
+            address = UserAddress.objects.create(
+                user=user,
+                address_type='shipping',
+                first_name=validated_data['address_first_name'],
+                last_name=validated_data['address_last_name'],
+                address_line_1=validated_data['address_line_1'],
+                address_line_2=validated_data.get('address_line_2', ''),
+                city=validated_data['city'],
+                state_province=validated_data['state_province'],
+                postal_code=validated_data['postal_code'],
+                phone_number=validated_data.get('phone_number', ''),
+                is_default=True
+            )
+            
+            address_json = {
+                'recipient_name': f"{address.first_name} {address.last_name}",
+                'recipient_phone': address.phone_number,
+                'province': address.state_province,
+                'city': address.city,
+                'district': address.address_line_2 or '',
+                'street_address': address.address_line_1,
+                'postal_code': address.postal_code,
+                'type': address.address_type
+            }
+            
+            # Create order
+            order = Order.objects.create(
+                user=user,
+                status=Order.STATUS_PENDING,
+                shipping_address=address_json,
+                billing_address=address_json,
+                payment_method=validated_data['payment_method'],
+                subtotal=cart.subtotal,
+                discount_amount=cart.discount_amount,
+                total_amount=cart.total,
+                customer_notes=validated_data.get('notes', '')
+            )
+            
+            # Create order items from cart items (and reduce inventory)
+            for cart_item in cart.items.all():
+                if cart_item.variant:
+                    unit_price = cart_item.variant.calculated_price
+                else:
+                    unit_price = cart_item.product.price
+                OrderItem.objects.create(
+                    order=order,
+                    product=cart_item.product,
+                    variant=cart_item.variant,
+                    product_name=cart_item.product.name,
+                    variant_name=cart_item.variant.name if cart_item.variant else '',
+                    sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
+                    quantity=cart_item.quantity,
+                    unit_price=unit_price,
+                    subtotal=unit_price * cart_item.quantity,
+                    total_price=unit_price * cart_item.quantity,
+                    requires_prescription=cart_item.product.prescription_required == 'required'
+                )
+                # Reduce inventory
+                if cart_item.product.track_inventory:
+                    if cart_item.variant:
+                        cart_item.variant.stock_quantity -= cart_item.quantity
+                        cart_item.variant.save(update_fields=['stock_quantity'])
+                    else:
+                        cart_item.product.stock_quantity -= cart_item.quantity
+                        cart_item.product.save(update_fields=['stock_quantity'])
+            
+            cart.is_active = False
+            cart.save(update_fields=['is_active'])
+            
+            from rest_framework_simplejwt.tokens import RefreshToken
+            from accounts.serializers import UserSerializer
+            
+            refresh = RefreshToken.for_user(user)
+            return {
+                'order': order,
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+                'user': UserSerializer(user).data
+            }
