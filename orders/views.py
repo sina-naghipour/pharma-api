@@ -32,6 +32,8 @@ from accounts.otp_service import send_verification_code
 from .permissions import IsOrderOwner, IsAdminOrReadOnly
 from .filters import OrderFilter
 from django.utils import timezone
+from utils.idempotency import IdempotencyHelper
+from . import serializers
 
 logger = logging.getLogger(__name__)
 
@@ -84,78 +86,69 @@ class CartViewSet(viewsets.GenericViewSet):
         cart = self.get_or_create_cart()
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['post'])
     def add_item(self, request):
-        """Add item to cart"""
         serializer = AddToCartSerializer(data=request.data)
         if serializer.is_valid():
             cart = self.get_or_create_cart()
             product = serializer.validated_data['product']
             variant = serializer.validated_data['variant']
             quantity = serializer.validated_data['quantity']
-            
-            cart_item = CartItem.objects.filter(
+
+            cart_item, created = CartItem.objects.get_or_create(
                 cart=cart,
                 product=product,
-                variant=variant
-            ).first()
-            
-            if cart_item:
+                variant=variant,
+                defaults={'quantity': quantity, 'unit_price': variant.calculated_price if variant else product.price}
+            )
+            if not created:
                 cart_item.quantity += quantity
                 cart_item.save()
-            else:
-                unit_price = variant.calculated_price if variant else product.price
-                CartItem.objects.create(
-                    cart=cart,
-                    product=product,
-                    variant=variant,
-                    quantity=quantity,
-                    unit_price=unit_price
-                )
-            
+
+            # If coupon exists and new item is not applicable, remove coupon
+            if cart.coupon and not cart.coupon.is_applicable_to_item(cart_item):
+                cart.coupon = None
+                cart.save(update_fields=['coupon'])
+
             cart_serializer = self.get_serializer(cart)
             return Response(cart_serializer.data)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
+        return Response(serializer.errors, status=400)
+
     @action(detail=False, methods=['post'])
     def update_item(self, request):
-        """Update cart item quantity"""
         item_id = request.data.get('item_id')
         if not item_id:
-            return Response(
-                {'error': _('Item ID is required')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': 'Item ID is required'}, status=400)
+
         cart = self.get_or_create_cart()
         try:
             cart_item = CartItem.objects.get(cart=cart, id=item_id)
         except CartItem.DoesNotExist:
-            return Response(
-                {'error': _('Item not found in cart')},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        serializer = UpdateCartItemSerializer(
-            data=request.data,
-            context={'cart_item': cart_item}
-        )
+            return Response({'error': 'Item not found'}, status=404)
+
+        serializer = UpdateCartItemSerializer(data=request.data, context={'cart_item': cart_item})
         if serializer.is_valid():
             quantity = serializer.validated_data['quantity']
-            
             if quantity == 0:
                 cart_item.delete()
             else:
                 cart_item.quantity = quantity
                 cart_item.save()
-            
+
+            # Clear coupon if there are no eligible items left
+            if cart.coupon:
+                eligible_exists = any(cart.coupon.is_applicable_to_item(item) for item in cart.items.all())
+                if not eligible_exists:
+                    cart.coupon = None
+                    cart.save(update_fields=['coupon'])
+
             cart_serializer = self.get_serializer(cart)
             return Response(cart_serializer.data)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
+        return Response(serializer.errors, status=400)
+
     @action(detail=False, methods=['post'])
     def remove_item(self, request):
         """Remove item from cart"""
@@ -176,6 +169,14 @@ class CartViewSet(viewsets.GenericViewSet):
             )
         
         cart_item.delete()
+
+        # Clear coupon if there are no eligible items left
+        if cart.coupon:
+            eligible_exists = any(cart.coupon.is_applicable_to_item(item) for item in cart.items.all())
+            if not eligible_exists:
+                cart.coupon = None
+                cart.save(update_fields=['coupon'])
+
         cart_serializer = self.get_serializer(cart)
         return Response(cart_serializer.data)
     
@@ -186,41 +187,68 @@ class CartViewSet(viewsets.GenericViewSet):
         cart.items.all().delete()
         cart_serializer = self.get_serializer(cart)
         return Response(cart_serializer.data)
-    
+        
     @action(detail=False, methods=['post'])
     def apply_coupon(self, request):
         code = request.data.get('code')
         if not code:
-            return Response({'error': 'لطفا کد تخفیف را وارد کنید'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'لطفا کد تخفیف را وارد کنید'}, status=400)
 
         cart = self.get_or_create_cart()
+        user = request.user if request.user.is_authenticated else None
+        # For anonymous, use session key instead of user id
+        user_id = user.id if user else request.session.session_key
+
+        # Build idempotency key unique for this coupon, user, and cart
+        key = IdempotencyHelper.generate_key('coupon', code, user_id, cart.id)
+
+        def process_apply():
+            # ---- existing coupon validation logic ----
+            try:
+                coupon = Coupon.objects.get(code=code, is_active=True)
+            except Coupon.DoesNotExist:
+                raise serializers.ValidationError('کد تخفیف نامعتبر است')
+
+            now = timezone.now()
+            if coupon.valid_from and coupon.valid_from > now:
+                raise serializers.ValidationError('این کد تخفیف هنوز فعال نشده است')
+            if coupon.valid_until and coupon.valid_until < now:
+                raise serializers.ValidationError('این کد تخفیف منقضی شده است')
+
+            if cart.subtotal < coupon.minimum_order_amount:
+                raise serializers.ValidationError(f'حداقل مبلغ سفارش برای این کد {coupon.minimum_order_amount} تومان است')
+
+            if coupon.usage_limit and coupon.used_count >= coupon.usage_limit:
+                raise serializers.ValidationError('این کد تخفیف به حداکثر تعداد استفاده رسیده است')
+
+            if user and coupon.usage_limit_per_user:
+                user_usage_count = CouponUsage.objects.filter(coupon=coupon, user=user).count()
+                if user_usage_count >= coupon.usage_limit_per_user:
+                    raise serializers.ValidationError('شما قبلاً از این کد تخفیف استفاده کرده‌اید')
+
+            # Apply coupon to cart
+            cart.coupon = coupon
+            cart.save()
+
+            # Prepare optional partial eligibility message
+            eligible_count = sum(1 for item in cart.items.all() if coupon.is_applicable_to_item(item))
+            total_count = cart.items.count()
+            message = None
+            if eligible_count < total_count:
+                message = f"کد تخفیف فقط برای {eligible_count} محصول از {total_count} محصول قابل استفاده است."
+
+            # Serialize cart and include message if needed
+            serializer = CartSerializer(cart, context={'request': request})
+            response_data = serializer.data
+            if message:
+                response_data['coupon_message'] = message
+            return response_data, 200
 
         try:
-            coupon = Coupon.objects.get(code=code, is_active=True)
-        except Coupon.DoesNotExist:
-            return Response({'error': 'کد تخفیف نامعتبر است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        now = timezone.now()
-        if coupon.valid_from and coupon.valid_from > now:
-            return Response({'error': 'این کد تخفیف هنوز فعال نشده است'}, status=status.HTTP_400_BAD_REQUEST)
-        if coupon.valid_until and coupon.valid_until < now:
-            return Response({'error': 'این کد تخفیف منقضی شده است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if cart.subtotal < coupon.minimum_order_amount:
-            return Response({'error': f'حداقل مبلغ سفارش برای این کد {coupon.minimum_order_amount} تومان است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if coupon.usage_limit and coupon.used_count >= coupon.usage_limit:
-            return Response({'error': 'این کد تخفیف به حداکثر تعداد استفاده رسیده است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if request.user.is_authenticated and coupon.usage_limit_per_user:
-            user_usage_count = CouponUsage.objects.filter(coupon=coupon, user=request.user).count()
-            if user_usage_count >= coupon.usage_limit_per_user:
-                return Response({'error': 'شما قبلاً از این کد تخفیف استفاده کرده‌اید'}, status=status.HTTP_400_BAD_REQUEST)
-
-        cart.coupon = coupon
-        cart.save()
-        serializer = CartSerializer(cart, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+            data, status_code, from_cache = IdempotencyHelper.get_or_create(key, 60*60*48, process_apply)
+            return Response(data, status=status_code)
+        except serializers.ValidationError as e:
+            return Response({'error': str(e)}, status=400)
 
     @action(detail=False, methods=['post'])
     def upload_prescription(self, request):
@@ -469,6 +497,14 @@ class CartViewSet(viewsets.GenericViewSet):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=False, methods=['post'])
+    def remove_coupon(self, request):
+        cart = self.get_or_create_cart()
+        if cart.coupon:
+            cart.coupon = None
+            cart.save(update_fields=['coupon'])
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data)
 
 class OrderViewSet(viewsets.ModelViewSet):
     """ViewSet for managing orders"""

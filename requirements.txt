@@ -35,3 +35,6 @@ django-unfold
 # Payments (optional – for Stripe integration)
 # stripe>=7.8,<8.0
 smsir-python
+channels>=4.0,<5.0
+daphne>=4.0,<5.0
+channels-redis>=4.0,<5.0

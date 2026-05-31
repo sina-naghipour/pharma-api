@@ -7,6 +7,11 @@ from django.conf import settings
 from django.utils import timezone
 from django.db.models import Sum, F
 
+import logging
+from django.db import transaction
+from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 class Cart(models.Model):
     """Shopping cart model"""
@@ -138,6 +143,27 @@ class Cart(models.Model):
                 item.cart = self
                 item.save()
         cart.delete()
+
+    @property
+    def eligible_subtotal(self):
+        """Subtotal of items that are eligible for the applied coupon."""
+        if not self.coupon:
+            return self.subtotal
+        total = Decimal('0.00')
+        for item in self.items.all():
+            if self.coupon.is_applicable_to_item(item):
+                total += item.unit_price * item.quantity
+        return total
+
+    @property
+    def discount_amount(self):
+        if not self.coupon:
+            return Decimal('0.00')
+        eligible = self.eligible_subtotal
+        if self.coupon.discount_type == 'percentage':
+            return (eligible * self.coupon.discount_value / 100).quantize(Decimal('0.01'))
+        else:  # fixed amount
+            return min(self.coupon.discount_value, eligible)
 
 
 class CartItem(models.Model):
@@ -391,18 +417,36 @@ class Order(models.Model):
         ]
     
     def cancel(self, reason=""):
+        """Cancel the order, restore stock, and log the action."""
         if not self.can_cancel:
             raise ValueError(_("This order cannot be cancelled."))
-        self.status = self.STATUS_CANCELLED
-        self.cancelled_at = timezone.now()
-        self.staff_notes += f"\nCancelled: {reason}"
-        self.save(update_fields=['status', 'cancelled_at', 'staff_notes', 'updated_at'])
-        for item in self.items.all():
-            if item.product.track_inventory:
-                item.product.stock_quantity += item.quantity
-                item.product.save(update_fields=['stock_quantity'])
-
-
+        
+        if self.status == self.STATUS_CANCELLED:
+            logger.warning(f"Order {self.order_number} already cancelled. No action taken.")
+            return False
+        
+        with transaction.atomic():
+            # Restore stock for all items
+            for item in self.items.all():
+                if item.product.track_inventory:
+                    if item.variant:
+                        item.variant.stock_quantity += item.quantity
+                        item.variant.save(update_fields=['stock_quantity'])
+                        logger.info(f"Restored {item.quantity} of variant {item.variant.sku} for order {self.order_number}")
+                    else:
+                        item.product.stock_quantity += item.quantity
+                        item.product.save(update_fields=['stock_quantity'])
+                        logger.info(f"Restored {item.quantity} of product {item.product.sku} for order {self.order_number}")
+            
+            # Update order status
+            self.status = self.STATUS_CANCELLED
+            self.cancelled_at = timezone.now()
+            if reason:
+                self.staff_notes = (self.staff_notes or "") + f"\nCancelled: {reason}"
+            self.save(update_fields=['status', 'cancelled_at', 'staff_notes', 'updated_at'])
+            
+            logger.info(f"Order {self.order_number} cancelled successfully. Reason: {reason}")
+        return True
 class OrderItem(models.Model):
     """Order item model"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

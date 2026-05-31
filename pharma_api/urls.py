@@ -8,6 +8,7 @@ API_TITLE = 'Pharma API'
 API_DESCRIPTION = 'A comprehensive API for pharmaceutical e-commerce'
 API_VERSION = 'v1'
 
+
 urlpatterns = [
     # Django admin
     path('admin/', admin.site.urls),

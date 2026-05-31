@@ -159,6 +159,24 @@ class Coupon(models.Model):
             discount_amount=order.coupon_discount
         )
 
+    def is_applicable_to_item(self, cart_item):
+        """Return True if this coupon can be applied to the given cart item."""
+        product = cart_item.product
+
+        # If coupon has specific products, item must be one of them
+        if self.applicable_products.exists():
+            if product not in self.applicable_products.all():
+                return False
+
+        # If coupon has specific categories, item must belong to at least one of them
+        if self.applicable_categories.exists():
+            product_cats = product.categories.all()
+            if not product_cats.filter(id__in=self.applicable_categories.values_list('id', flat=True)).exists():
+                return False
+
+        # If no restrictions, always applicable
+        return True
+
 
 class CouponUsage(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

@@ -298,7 +298,14 @@ class ProductImageViewSet(viewsets.ModelViewSet):
         if product_slug:
             return ProductImage.objects.filter(product__slug=product_slug)
         return ProductImage.objects.all()
-
+    
+    @action(detail=True, methods=['post'])
+    def set_primary(self, request, pk=None):
+        image = self.get_object()
+        ProductImage.objects.filter(product=image.product, is_primary=True).update(is_primary=False)
+        image.is_primary = True
+        image.save()
+        return Response({'status': 'ok'})
 
 class BatchViewSet(viewsets.ModelViewSet):
     """ViewSet for managing product batches"""

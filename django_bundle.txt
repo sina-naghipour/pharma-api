@@ -2,7 +2,7 @@
 DJANGO APPLICATION BUNDLE
 ================================================================================
 Project: pharma_api
-Generated: 2026-05-20 01:44:41
+Generated: 2026-05-31 23:17:28
 Directory: D:\codes\pharma\pharma_api
 ================================================================================
 
@@ -255,31 +255,33 @@ class Command(BaseCommand):
 
 ================================================================================
 FILE: accounts\managers.py
-SIZE: 1,718 bytes
-MODIFIED: 2025-08-15 14:44:51.908160
+SIZE: 1,596 bytes
+MODIFIED: 2026-05-28 14:53:54.400218
 ================================================================================
 
-# accounts/managers.py
 from django.contrib.auth.base_user import BaseUserManager
 from django.utils.translation import gettext_lazy as _
 
 class UserManager(BaseUserManager):
     """Custom user model manager where username is the unique identifier for authentication."""
 
-    def create_user(self, username, email, password=None, **extra_fields):
+    def create_user(self, username, email=None, password=None, **extra_fields):
         """Create and save a User with the given username, email and password."""
         if not username:
             raise ValueError(_('The Username must be set'))
-        if not email:
-            raise ValueError(_('The Email must be set'))
         
-        email = self.normalize_email(email)
+        # Email is now optional – normalize only if provided
+        if email:
+            email = self.normalize_email(email)
+        else:
+            email = ''
+        
         user = self.model(username=username, email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, username, email, password=None, **extra_fields):
+    def create_superuser(self, username, email=None, password=None, **extra_fields):
         """Create and save a SuperUser with the given username, email and password."""
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
@@ -292,16 +294,12 @@ class UserManager(BaseUserManager):
             raise ValueError(_('Superuser must have is_superuser=True.'))
         
         return self.create_user(username, email, password, **extra_fields)
-
-    def get_by_natural_key(self, username):
-        """Get user by username (natural key)"""
-        return self.get(**{self.model.USERNAME_FIELD: username})
     🐍 accounts\models.py
 
 ================================================================================
 FILE: accounts\models.py
-SIZE: 11,256 bytes
-MODIFIED: 2026-05-07 02:42:32.207678
+SIZE: 12,040 bytes
+MODIFIED: 2026-05-23 18:29:00.390906
 ================================================================================
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
@@ -311,6 +309,8 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from .managers import UserManager
 
+import uuid
+from django.conf import settings
 class User(AbstractBaseUser, PermissionsMixin):
     """Custom user model"""
     USER_TYPES = [
@@ -334,12 +334,13 @@ class User(AbstractBaseUser, PermissionsMixin):
         },
     )
     
-    email = models.EmailField(unique=True)
+    email = models.EmailField(unique=False, blank=True, null=True)
     first_name = models.CharField(max_length=30, blank=True)
     last_name = models.CharField(max_length=30, blank=True)
     phone_number = models.CharField(
         max_length=15,
         blank=True,
+        unique=True,
         validators=[RegexValidator(
             regex=r'^\+?1?\d{9,15}$',
             message="Phone number must be entered in the format: '+999999999'. Up to 15 digits allowed."
@@ -358,7 +359,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     objects = UserManager()
     
     USERNAME_FIELD = 'username'
-    REQUIRED_FIELDS = ['email', 'first_name', 'last_name']
+    REQUIRED_FIELDS = ['phone_number', 'first_name', 'last_name']
     
     class Meta:
         db_table = 'accounts_user'
@@ -367,6 +368,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         indexes = [
             models.Index(fields=['username']),
             models.Index(fields=['email']),
+            models.Index(fields=['phone_number']),
             models.Index(fields=['user_type']),
             models.Index(fields=['is_active']),
         ]
@@ -455,7 +457,8 @@ class UserAddress(models.Model):
         ('both', 'Both'),
     ]
     
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='addresses')
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='addresses')
     address_type = models.CharField(max_length=10, choices=ADDRESS_TYPES, default='shipping')
     
     # Address fields
@@ -515,7 +518,6 @@ class UserAddress(models.Model):
                 is_default=True
             ).exclude(pk=self.pk).update(is_default=False)
         super().save(*args, **kwargs)
-
 
 class PharmacyLicense(models.Model):
     """Pharmacy license information for pharmacy users"""
@@ -605,6 +607,82 @@ class PharmacyLicense(models.Model):
             delta = self.license_expiry_date - today
             return delta.days
         return None
+
+class OTP(models.Model):
+    phone_number = models.CharField(max_length=15, unique=True, db_index=True)
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    attempt_count = models.IntegerField(default=0)
+    is_verified = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"OTP for {self.phone_number}"
+
+    def is_valid(self):
+        return not self.is_verified and timezone.now() < self.expires_at
+    🐍 accounts\otp_service.py
+
+================================================================================
+FILE: accounts\otp_service.py
+SIZE: 1,810 bytes
+MODIFIED: 2026-05-20 23:17:39.981601
+================================================================================
+
+import random
+import requests
+from datetime import timedelta
+from django.utils import timezone
+from django.conf import settings
+from .models import OTP
+
+def generate_otp_code():
+    return ''.join(random.choices('0123456789', k=6))
+
+def send_verification_code(phone_number):
+    # Create or update OTP record
+    code = generate_otp_code()
+    otp, created = OTP.objects.update_or_create(
+        phone_number=phone_number,
+        defaults={
+            'code': code,
+            'created_at': timezone.now(),
+            'expires_at': timezone.now() + timedelta(minutes=5),
+            'attempt_count': 0,
+            'is_verified': False,
+        }
+    )
+
+    # Mock mode for testing (prints code to console)
+    if getattr(settings, 'MOCK_SMS', False):
+        print(f"[MOCK] Code for {phone_number}: {otp.code}")
+        return {"status": "mock"}
+    print(f"CODE IS : {code}")
+    # Production SMS.ir API
+    api_key = settings.SMS_IR_API_KEY
+    template_id = int(settings.SMS_IR_VERIFY_TEMPLATE_ID)
+    # Match your template's placeholder – adjust as needed
+    param_name = "code"   # use "Code" if your template uses #CODE#
+
+    url = "https://api.sms.ir/v1/send/verify"
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'text/plain',
+        'x-api-key': api_key
+    }
+    payload = {
+        "mobile": phone_number,
+        "templateId": template_id,
+        "parameters": [{"name": param_name, "value": otp.code}]
+    }
+
+    response = requests.post(url, json=payload, headers=headers, timeout=10)
+    result = response.json()
+    print(f"SMS.ir response: {result}")
+
+    if response.status_code != 200 or result.get('status') != 1:
+        raise Exception(f"SMS failed: {result.get('message')}")
+    return result
     🐍 accounts\permissions.py
 
 ================================================================================
@@ -676,8 +754,8 @@ class IsDoctorUser(permissions.BasePermission):
 
 ================================================================================
 FILE: accounts\serializers.py
-SIZE: 8,153 bytes
-MODIFIED: 2025-08-15 15:44:34.438282
+SIZE: 8,487 bytes
+MODIFIED: 2026-05-21 00:50:07.425377
 ================================================================================
 
 # accounts/serializers.py
@@ -759,13 +837,18 @@ class UserSerializer(serializers.ModelSerializer):
     """Serializer for user data"""
     profile = serializers.SerializerMethodField()
     full_name = serializers.SerializerMethodField()
+    is_profile_complete = serializers.SerializerMethodField()
     
     class Meta:
         model = User
         fields = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_number', 
-                 'user_type', 'is_verified', 'date_joined', 'profile', 'full_name')
+                 'user_type', 'is_verified', 'date_joined', 'profile', 'full_name', 'is_profile_complete')
         read_only_fields = ('id', 'user_type', 'is_verified', 'date_joined')
-    
+    def get_is_profile_complete(self, obj):
+        """Check if user has filled required profile fields"""
+        has_name = bool(obj.first_name and obj.last_name)
+        has_real_email = bool(obj.email)
+        return has_name and has_real_email
     def get_profile(self, obj):
         try:
             profile = obj.profile
@@ -1508,15 +1591,14 @@ class PasswordChangeViewTest(TestCase):
 
 ================================================================================
 FILE: accounts\urls.py
-SIZE: 983 bytes
-MODIFIED: 2026-05-07 02:11:16.329948
+SIZE: 1,308 bytes
+MODIFIED: 2026-05-23 16:58:35.062274
 ================================================================================
 
 # accounts/urls.py
 from django.urls import path, include
 from rest_framework.routers import SimpleRouter
 from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
     TokenRefreshView,
     TokenVerifyView,
 )
@@ -1532,18 +1614,21 @@ app_name = 'accounts'
 urlpatterns = [
     path('', include(router.urls)),
     # JWT endpoints
-    path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('auth/login/', views.CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/verify/', TokenVerifyView.as_view(), name='token_verify'),
     # Legacy Logout
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
+    path('auth/request-otp/', views.UserViewSet.as_view({'post': 'request_otp'}), name='request_otp'),
+    path('auth/verify-otp/', views.UserViewSet.as_view({'post': 'verify_otp'}), name='verify_otp'),
+    path('auth/set_password_with_otp/', views.UserViewSet.as_view({'post': 'set_password_with_otp'}), name='set_password_with_otp'),
 ]
     🐍 accounts\views.py
 
 ================================================================================
 FILE: accounts\views.py
-SIZE: 23,906 bytes
-MODIFIED: 2026-05-20 00:21:40.495672
+SIZE: 34,338 bytes
+MODIFIED: 2026-05-23 18:44:14.015615
 ================================================================================
 
 # accounts/views.py
@@ -1562,18 +1647,23 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from .models import User, UserProfile, UserAddress, PharmacyLicense
+from django.core.exceptions import ObjectDoesNotExist
+from rest_framework_simplejwt.tokens import RefreshToken
+from .models import User, UserProfile, UserAddress, PharmacyLicense, OTP
 from .serializers import (
     UserSerializer, UserCreateSerializer, UserProfileSerializer,
     UserAddressSerializer, PharmacyLicenseSerializer, PasswordChangeSerializer,
     PasswordResetSerializer, PasswordResetConfirmSerializer,
-    UserLoginSerializer  # اضافه کردن این serializer جدید
+    UserLoginSerializer
 )
 from django.core.cache import cache
-from django.utils import timezone
-
 from .permissions import IsOwnerOrAdmin
-
+from .otp_service import send_verification_code
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.core.cache import cache
+from .otp_service import send_verification_code
+import uuid
 class UserViewSet(viewsets.ModelViewSet):
     """ViewSet for managing users"""
     queryset = User.objects.all()
@@ -1804,6 +1894,245 @@ class UserViewSet(viewsets.ModelViewSet):
             'message': 'Account deactivated successfully'
         })
 
+    # ========== SMS OTP LOGIN ==========
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def request_otp(self, request):
+        """Request OTP code via SMS"""
+        phone = request.data.get('phone_number')
+        if not phone:
+            return Response(
+                {'error': 'شماره موبایل الزامی است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            send_verification_code(phone)
+            return Response(
+                {'message': 'کد تایید به شماره شما ارسال شد'},
+                status=status.HTTP_200_OK
+            )
+        except Exception as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def verify_otp(self, request):
+        """Verify OTP and login/register user"""
+        phone = request.data.get('phone_number')
+        code = request.data.get('code')
+        if not phone or not code:
+            return Response(
+                {'error': 'شماره موبایل و کد تایید الزامی است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except ObjectDoesNotExist:
+            return Response(
+                {'error': 'درخواست کد تایید یافت نشد'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if not otp.is_valid():
+            return Response(
+                {'error': 'کد تایید منقضی شده یا قبلاً استفاده شده است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if otp.code != code:
+            otp.attempt_count += 1
+            otp.save(update_fields=['attempt_count'])
+            remaining = 5 - otp.attempt_count
+            if remaining <= 0:
+                otp.delete()
+                return Response(
+                    {'error': 'تعداد تلاش نامعتبر بیش از حد مجاز. لطفاً دوباره درخواست کد دهید.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            return Response(
+                {'error': f'کد نامعتبر. {remaining} تلاش باقی مانده.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Mark OTP as verified
+        otp.is_verified = True
+        otp.save(update_fields=['is_verified'])
+
+        # Find existing user by phone number, or create new
+        user = User.objects.filter(phone_number=phone).first()
+        if not user:
+            user = User.objects.create_user(
+                username=phone,
+                email='',
+                phone_number=phone,
+                first_name='',
+                last_name='',
+                user_type='customer',
+                is_active=True
+            )
+        else:
+            # Ensure phone_number is set (should be, but for safety)
+            if not user.phone_number:
+                user.phone_number = phone
+                user.save(update_fields=['phone_number'])
+
+        # Generate JWT tokens (simplejwt)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+            'user': UserSerializer(user).data
+        })
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def set_password_with_otp(self, request):
+        """
+        Change or set password after OTP verification (no authentication required).
+        Requires: phone_number, code, new_password, confirm_password
+        """
+        phone = request.data.get('phone_number')
+        code = request.data.get('code')
+        new_password = request.data.get('new_password')
+        confirm_password = request.data.get('confirm_password')
+
+        if not all([phone, code, new_password, confirm_password]):
+            return Response(
+                {'error': 'همه فیلدها الزامی است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if new_password != confirm_password:
+            return Response(
+                {'error': 'رمز عبور و تکرار آن مطابقت ندارند'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Verify OTP
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except OTP.DoesNotExist:
+            return Response(
+                {'error': 'درخواست کد تایید یافت نشد'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if not otp.is_valid():
+            return Response(
+                {'error': 'کد تایید منقضی شده یا قبلاً استفاده شده است'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if otp.code != code:
+            otp.attempt_count += 1
+            otp.save(update_fields=['attempt_count'])
+            remaining = 5 - otp.attempt_count
+            if remaining <= 0:
+                otp.delete()
+                return Response(
+                    {'error': 'تعداد تلاش نامعتبر بیش از حد مجاز. لطفاً دوباره درخواست کد دهید.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            return Response(
+                {'error': f'کد نامعتبر. {remaining} تلاش باقی مانده.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Mark OTP as used
+        otp.is_verified = True
+        otp.save(update_fields=['is_verified'])
+
+        # Find user by phone number (not from request.user)
+        try:
+            user = User.objects.get(phone_number=phone)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'کاربری با این شماره موبایل یافت نشد'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Set new password
+        user.set_password(new_password)
+        user.save()
+
+        # Invalidate existing auth tokens (optional)
+        Token.objects.filter(user=user).delete()
+
+        return Response({'message': 'رمز عبور با موفقیت تغییر کرد'})
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def register_request_otp(self, request):
+        """Step 1: Send OTP to phone for registration"""
+        phone = request.data.get('phone_number')
+        if not phone:
+            return Response({'error': 'شماره موبایل الزامی است'}, status=400)
+        
+        # Generate a temporary registration ID
+        reg_id = str(uuid.uuid4())
+        # Store registration data in cache (expires in 10 minutes)
+        cache.set(f'reg_{reg_id}', {'phone': phone, 'data': request.data}, timeout=600)
+        
+        try:
+            send_verification_code(phone)
+            return Response({'reg_id': reg_id, 'message': 'کد تایید ارسال شد'})
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def register_verify_otp(self, request):
+        """Step 2: Verify OTP and create user"""
+        reg_id = request.data.get('reg_id')
+        code = request.data.get('code')
+        if not reg_id or not code:
+            return Response({'error': 'شناسه ثبت نام و کد تایید الزامی است'}, status=400)
+        
+        # Get registration data from cache
+        reg_data = cache.get(f'reg_{reg_id}')
+        if not reg_data:
+            return Response({'error': 'ثبت نام منقضی شده یا نامعتبر است'}, status=400)
+        
+        phone = reg_data['phone']
+        # Verify OTP
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except OTP.DoesNotExist:
+            return Response({'error': 'درخواست کد تایید یافت نشد'}, status=404)
+        
+        if not otp.is_valid() or otp.code != code:
+            return Response({'error': 'کد نامعتبر یا منقضی شده'}, status=400)
+        
+        # Mark OTP as used
+        otp.is_verified = True
+        otp.save()
+        
+        # Create user
+        user_data = reg_data['data']
+        # Check if phone already exists
+        if User.objects.filter(phone_number=phone).exists():
+            return Response({'error': 'این شماره موبایل قبلاً ثبت شده است'}, status=400)
+        
+        user = User.objects.create_user(
+            username=user_data['username'],
+            email=user_data.get('email', ''),
+            phone_number=phone,
+            first_name=user_data.get('first_name', ''),
+            last_name=user_data.get('last_name', ''),
+            password=user_data['password'],
+            user_type='customer',
+            is_active=True
+        )
+        
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        # Delete cache
+        cache.delete(f'reg_{reg_id}')
+        
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data
+        })
 
 # Custom Serializer for Username Authentication
 class CustomAuthTokenSerializer(auth_serializers.AuthTokenSerializer):
@@ -2147,6 +2476,8 @@ class LoginView(APIView):
         # برای دیباگ
         print(f"Login validation errors: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 class RegisterView(APIView):
     """Simple registration view for frontend"""
     permission_classes = [permissions.AllowAny]
@@ -2164,6 +2495,17 @@ class RegisterView(APIView):
             }, status=status.HTTP_201_CREATED)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        # Add user data to the response
+        user_serializer = UserSerializer(self.user)
+        data['user'] = user_serializer.data
+        return data
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
     🐍 analytics\__init__.py
 
 ================================================================================
@@ -6466,12 +6808,51 @@ class OrderFilter(django_filters.FilterSet):
             Q(order_number__icontains=value) |
             Q(tracking_number__icontains=value)
         )
+        🐍 orders\management\commands\__init__.py
+
+================================================================================
+FILE: orders\management\commands\__init__.py
+SIZE: 0 bytes
+MODIFIED: 2026-05-28 22:51:44.489782
+================================================================================
+
+        🐍 orders\management\commands\release_expired_orders.py
+
+================================================================================
+FILE: orders\management\commands\release_expired_orders.py
+SIZE: 1,005 bytes
+MODIFIED: 2026-05-28 22:51:33.144185
+================================================================================
+
+from django.core.management.base import BaseCommand
+from django.utils import timezone
+from orders.models import Order
+
+class Command(BaseCommand):
+    help = 'Release inventory for unpaid orders older than 15 minutes'
+
+    def handle(self, *args, **options):
+        cutoff = timezone.now() - timezone.timedelta(minutes=15)
+        expired_orders = Order.objects.filter(
+            status=Order.STATUS_PENDING,
+            created_at__lte=cutoff,
+            paid_at__isnull=True
+        )
+        count = 0
+        for order in expired_orders:
+            try:
+                order.cancel(reason="Reservation timeout - no payment within 15 minutes")
+                self.stdout.write(self.style.SUCCESS(f"Cancelled order {order.order_number}"))
+                count += 1
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"Failed to cancel {order.order_number}: {e}"))
+        self.stdout.write(self.style.SUCCESS(f"Total cancelled: {count}"))
     🐍 orders\models.py
 
 ================================================================================
 FILE: orders\models.py
-SIZE: 24,682 bytes
-MODIFIED: 2026-05-07 02:37:28.616154
+SIZE: 26,674 bytes
+MODIFIED: 2026-05-28 22:53:57.113104
 ================================================================================
 
 import uuid
@@ -6483,6 +6864,11 @@ from django.conf import settings
 from django.utils import timezone
 from django.db.models import Sum, F
 
+import logging
+from django.db import transaction
+from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 class Cart(models.Model):
     """Shopping cart model"""
@@ -6614,6 +7000,27 @@ class Cart(models.Model):
                 item.cart = self
                 item.save()
         cart.delete()
+
+    @property
+    def eligible_subtotal(self):
+        """Subtotal of items that are eligible for the applied coupon."""
+        if not self.coupon:
+            return self.subtotal
+        total = Decimal('0.00')
+        for item in self.items.all():
+            if self.coupon.is_applicable_to_item(item):
+                total += item.unit_price * item.quantity
+        return total
+
+    @property
+    def discount_amount(self):
+        if not self.coupon:
+            return Decimal('0.00')
+        eligible = self.eligible_subtotal
+        if self.coupon.discount_type == 'percentage':
+            return (eligible * self.coupon.discount_value / 100).quantize(Decimal('0.01'))
+        else:  # fixed amount
+            return min(self.coupon.discount_value, eligible)
 
 
 class CartItem(models.Model):
@@ -6867,18 +7274,36 @@ class Order(models.Model):
         ]
     
     def cancel(self, reason=""):
+        """Cancel the order, restore stock, and log the action."""
         if not self.can_cancel:
             raise ValueError(_("This order cannot be cancelled."))
-        self.status = self.STATUS_CANCELLED
-        self.cancelled_at = timezone.now()
-        self.staff_notes += f"\nCancelled: {reason}"
-        self.save(update_fields=['status', 'cancelled_at', 'staff_notes', 'updated_at'])
-        for item in self.items.all():
-            if item.product.track_inventory:
-                item.product.stock_quantity += item.quantity
-                item.product.save(update_fields=['stock_quantity'])
-
-
+        
+        if self.status == self.STATUS_CANCELLED:
+            logger.warning(f"Order {self.order_number} already cancelled. No action taken.")
+            return False
+        
+        with transaction.atomic():
+            # Restore stock for all items
+            for item in self.items.all():
+                if item.product.track_inventory:
+                    if item.variant:
+                        item.variant.stock_quantity += item.quantity
+                        item.variant.save(update_fields=['stock_quantity'])
+                        logger.info(f"Restored {item.quantity} of variant {item.variant.sku} for order {self.order_number}")
+                    else:
+                        item.product.stock_quantity += item.quantity
+                        item.product.save(update_fields=['stock_quantity'])
+                        logger.info(f"Restored {item.quantity} of product {item.product.sku} for order {self.order_number}")
+            
+            # Update order status
+            self.status = self.STATUS_CANCELLED
+            self.cancelled_at = timezone.now()
+            if reason:
+                self.staff_notes = (self.staff_notes or "") + f"\nCancelled: {reason}"
+            self.save(update_fields=['status', 'cancelled_at', 'staff_notes', 'updated_at'])
+            
+            logger.info(f"Order {self.order_number} cancelled successfully. Reason: {reason}")
+        return True
 class OrderItem(models.Model):
     """Order item model"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -7231,8 +7656,8 @@ class IsAdminOrReadOnly(permissions.BasePermission):
 
 ================================================================================
 FILE: orders\serializers.py
-SIZE: 27,926 bytes
-MODIFIED: 2026-05-17 14:03:07.549306
+SIZE: 41,241 bytes
+MODIFIED: 2026-05-28 23:00:35.413771
 ================================================================================
 
 # orders/serializers.py
@@ -7249,6 +7674,19 @@ from .models import (
 )
 
 from payments.models import Payment
+
+
+from accounts.models import User
+from accounts.serializers import UserSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+
+
+import uuid
+from decimal import Decimal
+from django.core.cache import cache
+from utils.idempotency import IdempotencyHelper
+
+
 
 class CartItemSerializer(serializers.ModelSerializer):
     """Serializer for cart items"""
@@ -7349,6 +7787,18 @@ class CartSerializer(serializers.ModelSerializer):
     shipping_address_details = serializers.SerializerMethodField()
     billing_address_details = serializers.SerializerMethodField()
     
+    coupon_code = serializers.SerializerMethodField()
+    coupon_discount_value = serializers.SerializerMethodField()
+    coupon_discount_type = serializers.SerializerMethodField()
+
+    def get_coupon_code(self, obj):
+        return obj.coupon.code if obj.coupon else None
+
+    def get_coupon_discount_value(self, obj):
+        return obj.coupon.discount_value if obj.coupon else None
+
+    def get_coupon_discount_type(self, obj):
+        return obj.coupon.discount_type if obj.coupon else None
     class Meta:
         model = Cart
         fields = [
@@ -7357,12 +7807,14 @@ class CartSerializer(serializers.ModelSerializer):
             'has_out_of_stock_items', 'shipping_address', 'billing_address',
             'shipping_address_details', 'billing_address_details',
             'prescription_file', 'prescription_verified',
-            'coupon', 'created_at', 'updated_at'
+            'coupon', 'created_at', 'updated_at',
+            'coupon_code', 'coupon_discount_value', 'coupon_discount_type'   
         ]
         read_only_fields = [
             'id', 'user', 'subtotal', 'total', 'discount_amount',
             'total_items', 'requires_prescription', 'has_out_of_stock_items',
-            'prescription_verified', 'created_at', 'updated_at'
+            'prescription_verified', 'created_at', 'updated_at',
+            'coupon_code', 'coupon_discount_value', 'coupon_discount_type'
         ]
     
     def get_shipping_address_details(self, obj):
@@ -7553,17 +8005,18 @@ class OrderDetailSerializer(serializers.ModelSerializer):
 
 
 class CreateOrderSerializer(serializers.Serializer):
-    """Serializer for creating orders"""
+    """Serializer for creating orders with idempotency support"""
     shipping_address_id = serializers.UUIDField(required=True)
     billing_address_id = serializers.UUIDField(required=False)
     payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES, required=True)
     customer_notes = serializers.CharField(required=False, allow_blank=True)
     use_same_address_for_billing = serializers.BooleanField(default=False)
-    
+    idempotency_key = serializers.UUIDField(required=False)   # client-generated or fallback to cart.id
+
     def validate(self, data):
         """Validate order creation data"""
         user = self.context['request'].user
-        
+
         # Validate shipping address
         try:
             shipping_address = UserAddress.objects.get(
@@ -7574,7 +8027,7 @@ class CreateOrderSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'shipping_address_id': _("Invalid shipping address.")
             })
-        
+
         # Set billing address based on selection
         if data.get('use_same_address_for_billing'):
             billing_address = shipping_address
@@ -7588,7 +8041,7 @@ class CreateOrderSerializer(serializers.Serializer):
                 raise serializers.ValidationError({
                     'billing_address_id': _("Invalid billing address.")
                 })
-        
+
         # Get active cart
         try:
             cart = Cart.objects.get(user=user, is_active=True)
@@ -7596,43 +8049,111 @@ class CreateOrderSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'non_field_errors': _("No active cart found.")
             })
-        
+
         # Check if cart has items
         if not cart.items.exists():
             raise serializers.ValidationError({
                 'non_field_errors': _("Your cart is empty.")
             })
-        
+
         # Check if prescription is required and provided
         if cart.requires_prescription and not cart.prescription_file:
             raise serializers.ValidationError({
                 'non_field_errors': _("Prescription is required for some items in your cart.")
             })
-        
-        # Check if any item is out of stock
-        if cart.has_out_of_stock_items:
+
+        # Basic stock check (without lock – will be rechecked inside atomic block)
+        for item in cart.items.all():
+            variant = item.variant
+            product = item.product
+            required = item.quantity
+            if variant and variant.track_inventory and variant.stock_quantity < required:
+                raise serializers.ValidationError({
+                    'non_field_errors': _(f"موجودی کافی برای {variant.name} وجود ندارد.")
+                })
+            elif not variant and product.track_inventory and product.stock_quantity < required:
+                raise serializers.ValidationError({
+                    'non_field_errors': _(f"موجودی کافی برای {product.name} وجود ندارد.")
+                })
+        idempotency_key = self.context['request'].headers.get('Idempotency-Key')
+        if idempotency_key:
+            data['idempotency_key'] = idempotency_key
+
+        # Check if this cart already has an order (idempotency)
+        # This is an additional safety net
+        if cart.orders.exists():
             raise serializers.ValidationError({
-                'non_field_errors': _("Some items in your cart are out of stock.")
+                'non_field_errors': _("This cart has already been submitted.")
             })
-        
-        # Add validated objects to data
+
+        # Use provided idempotency key or fallback to cart id
+        if not data.get('idempotency_key'):
+            data['idempotency_key'] = cart.id
+
         data['cart'] = cart
         data['shipping_address'] = shipping_address
         data['billing_address'] = billing_address
-        
         return data
-    
+
     def create(self, validated_data):
-        """Create order from cart"""
+        """Create order from cart with stock locking, order‑level and item‑level idempotency"""
         cart = validated_data['cart']
         user = self.context['request'].user
         shipping_address = validated_data['shipping_address']
         billing_address = validated_data['billing_address']
         payment_method = validated_data['payment_method']
         customer_notes = validated_data.get('customer_notes', '')
-        
+        idempotency_key = validated_data['idempotency_key']
+
+        # Build cache key for the whole order
+        cache_key = IdempotencyHelper.generate_key('order', idempotency_key)
+
+        # 1. Outer idempotency: check if this order already succeeded
+        cached = cache.get(cache_key)
+        if cached:
+            try:
+                existing_order = Order.objects.get(id=cached['order_id'])
+                if existing_order.user == user and existing_order.status != Order.STATUS_CANCELLED:
+                    return existing_order
+            except Order.DoesNotExist:
+                pass
+
         with transaction.atomic():
-            # Create order
+            # Lock product/variant rows to prevent race conditions
+            product_ids = []
+            variant_ids = []
+            for item in cart.items.all():
+                if item.variant:
+                    variant_ids.append(item.variant.id)
+                else:
+                    product_ids.append(item.product.id)
+
+            if product_ids:
+                Product.objects.select_for_update().filter(id__in=product_ids)
+            if variant_ids:
+                ProductVariant.objects.select_for_update().filter(id__in=variant_ids)
+
+            # Double-check stock and max order quantity after locking
+            for item in cart.items.all():
+                variant = item.variant
+                product = item.product
+                required = item.quantity
+
+                if product.max_order_quantity > 0 and required > product.max_order_quantity:
+                    raise serializers.ValidationError(
+                        f"حداکثر تعداد قابل سفارش برای {product.name} {product.max_order_quantity} عدد است."
+                    )
+
+                if variant and variant.track_inventory and variant.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {variant.name} وجود ندارد."
+                    )
+                elif not variant and product.track_inventory and product.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {product.name} وجود ندارد."
+                    )
+
+            # Create order (without items yet)
             order = Order.objects.create(
                 user=user,
                 status=Order.STATUS_PENDING,
@@ -7641,18 +8162,18 @@ class CreateOrderSerializer(serializers.Serializer):
                 payment_method=payment_method,
                 subtotal=cart.subtotal,
                 discount_amount=cart.discount_amount,
-                total_amount=cart.total,          # ✅ fixed field name
+                total_amount=cart.total,
                 customer_notes=customer_notes,
                 prescription_file=cart.prescription_file,
                 prescription_verified=cart.prescription_verified
             )
-            
-            # Add coupon info if applied
+
+            # Apply coupon if present
             if cart.coupon:
                 order.coupon_code = cart.coupon.code
                 order.coupon_discount = cart.discount_amount
                 order.save(update_fields=['coupon_code', 'coupon_discount'])
-            
+
                 from promotions.models import CouponUsage
                 CouponUsage.objects.create(
                     coupon=cart.coupon,
@@ -7662,16 +8183,23 @@ class CreateOrderSerializer(serializers.Serializer):
                 )
                 cart.coupon.used_count += 1
                 cart.coupon.save(update_fields=['used_count'])
-                
-            # Create order items from cart items
+
+            # 2. Item‑level idempotency: process each cart item with its own cache key
+            processed_item_keys = []
+
             for cart_item in cart.items.all():
-                # Get product price
+                item_key = IdempotencyHelper.generate_key('reserve', cart_item.id)
+
+                # Skip if this cart item was already processed in a previous successful order
+                if cache.get(item_key):
+                    continue
+
+                # Determine unit price
                 if cart_item.variant:
                     unit_price = cart_item.variant.calculated_price
                 else:
                     unit_price = cart_item.product.price
-                
-                # Create order item (compute totals inline, avoid variable)
+
                 OrderItem.objects.create(
                     order=order,
                     product=cart_item.product,
@@ -7682,11 +8210,11 @@ class CreateOrderSerializer(serializers.Serializer):
                     quantity=cart_item.quantity,
                     unit_price=unit_price,
                     subtotal=unit_price * cart_item.quantity,
-                    total_price=unit_price * cart_item.quantity,   # ✅ fixed: total_price
+                    total_price=unit_price * cart_item.quantity,
                     requires_prescription=cart_item.product.prescription_required == 'required'
                 )
-                
-                # Update product inventory
+
+                # Reduce inventory
                 if cart_item.product.track_inventory:
                     if cart_item.variant:
                         cart_item.variant.stock_quantity -= cart_item.quantity
@@ -7694,29 +8222,25 @@ class CreateOrderSerializer(serializers.Serializer):
                     else:
                         cart_item.product.stock_quantity -= cart_item.quantity
                         cart_item.product.save(update_fields=['stock_quantity'])
-            
+
+                processed_item_keys.append(item_key)
+
             # Deactivate cart
             cart.is_active = False
             cart.save(update_fields=['is_active'])
-            # TODO payment later.
-            # # Create payment record for online payments
-            # if payment_method == Order.PAYMENT_ONLINE:
-            #     Payment.objects.create(
-            #         order=order,
-            #         amount=order.total_amount,
-            #         method='online',      # adjust to your actual choice value
-            #         status='pending'
-            #     )
-            # elif payment_method == Order.PAYMENT_COD:
-            #     Payment.objects.create(
-            #         order=order,
-            #         amount=order.total_amount,
-            #         method='cod',         # adjust to your actual choice value
-            #         status='pending'
-            #     )
-            
+
+            # After successful commit, store both order‑level and item‑level caches
+            def cache_after_commit():
+                # Order cache (48 hours)
+                cache.set(cache_key, {'order_id': str(order.id), 'status': 'completed'}, timeout=60*60*48)
+                # Item caches (15 minutes – enough to cover any retry window)
+                for item_key in processed_item_keys:
+                    cache.set(item_key, {'processed': True}, timeout=60*15)
+
+            transaction.on_commit(cache_after_commit)
+
             return order
-        
+
     def _address_to_json(self, address):
         """Convert address model to JSON representation"""
         return {
@@ -7914,7 +8438,186 @@ class CreateRefundSerializer(serializers.Serializer):
             
             return refund
 
+class GuestCheckoutSerializer(serializers.Serializer):
+    guest_phone = serializers.CharField(required=True, max_length=15)
+    guest_first_name = serializers.CharField(required=True, max_length=30)
+    guest_last_name = serializers.CharField(required=True, max_length=30)
+    guest_email = serializers.EmailField(required=False, allow_blank=True)
+    
+    address_first_name = serializers.CharField(required=True, max_length=50)
+    address_last_name = serializers.CharField(required=True, max_length=50)
+    address_line_1 = serializers.CharField(required=True, max_length=255)
+    address_line_2 = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    city = serializers.CharField(required=True, max_length=100)
+    state_province = serializers.CharField(required=True, max_length=100)
+    postal_code = serializers.CharField(required=True, max_length=20)
+    phone_number = serializers.CharField(required=False, allow_blank=True, max_length=15)
+    
+    payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES, required=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    
+    def validate(self, data):
+        if not data.get('guest_phone'):
+            raise serializers.ValidationError({'guest_phone': 'شماره موبایل الزامی است'})
+        return data
+    
+    def create(self, validated_data):
+        request = self.context['request']
+        session_key = request.session.session_key
+        if not session_key:
+            request.session.save()
+            session_key = request.session.session_key
 
+        phone = validated_data['guest_phone']
+        email = validated_data.get('guest_email', '')
+        
+        # Find or create user by phone number
+        user = User.objects.filter(phone_number=phone).first()
+        if not user:
+            user = User.objects.create_user(
+                username=phone,
+                email=email if email else f'{phone}@placeholder.com',
+                phone_number=phone,
+                first_name=validated_data['guest_first_name'],
+                last_name=validated_data['guest_last_name'],
+                user_type='customer',
+                is_active=True
+            )
+        else:
+            if not user.first_name and validated_data.get('guest_first_name'):
+                user.first_name = validated_data['guest_first_name']
+            if not user.last_name and validated_data.get('guest_last_name'):
+                user.last_name = validated_data['guest_last_name']
+            if email and not user.email:
+                user.email = email
+            if not user.phone_number and phone:
+                user.phone_number = phone
+            user.save()
+
+        # Anonymous cart by session
+        cart = Cart.objects.filter(session_id=session_key, user__isnull=True, is_active=True).first()
+        if not cart or not cart.items.exists():
+            raise serializers.ValidationError({'non_field_errors': 'سبد خرید خالی است'})
+        
+        # Transfer cart to user (do before stock check to lock, but lock uses the items)
+        # However, we need the cart items to remain the same; we'll lock after cart transfer but before order.
+        # Actually we can lock the products/variants before transferring the cart.
+        # To keep it simple, lock using the items from the anonymous cart before transferring.
+        with transaction.atomic():
+            # Lock product/variant rows
+            product_ids = []
+            variant_ids = []
+            for item in cart.items.all():
+                if item.variant:
+                    variant_ids.append(item.variant.id)
+                else:
+                    product_ids.append(item.product.id)
+            
+            if product_ids:
+                Product.objects.select_for_update().filter(id__in=product_ids)
+            if variant_ids:
+                ProductVariant.objects.select_for_update().filter(id__in=variant_ids)
+            
+            # Check stock after lock
+            for item in cart.items.all():
+                variant = item.variant
+                product = item.product
+                required = item.quantity
+                if variant and variant.track_inventory and variant.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {variant.name} وجود ندارد."
+                    )
+                elif not variant and product.track_inventory and product.stock_quantity < required:
+                    raise serializers.ValidationError(
+                        f"موجودی کافی برای {product.name} وجود ندارد."
+                    )
+            
+            # Transfer cart to user
+            cart.user = user
+            cart.session_id = None
+            cart.save()
+            
+            # Create shipping address
+            from accounts.models import UserAddress
+            address = UserAddress.objects.create(
+                user=user,
+                address_type='shipping',
+                first_name=validated_data['address_first_name'],
+                last_name=validated_data['address_last_name'],
+                address_line_1=validated_data['address_line_1'],
+                address_line_2=validated_data.get('address_line_2', ''),
+                city=validated_data['city'],
+                state_province=validated_data['state_province'],
+                postal_code=validated_data['postal_code'],
+                phone_number=validated_data.get('phone_number', ''),
+                is_default=True
+            )
+            
+            address_json = {
+                'recipient_name': f"{address.first_name} {address.last_name}",
+                'recipient_phone': address.phone_number,
+                'province': address.state_province,
+                'city': address.city,
+                'district': address.address_line_2 or '',
+                'street_address': address.address_line_1,
+                'postal_code': address.postal_code,
+                'type': address.address_type
+            }
+            
+            # Create order
+            order = Order.objects.create(
+                user=user,
+                status=Order.STATUS_PENDING,
+                shipping_address=address_json,
+                billing_address=address_json,
+                payment_method=validated_data['payment_method'],
+                subtotal=cart.subtotal,
+                discount_amount=cart.discount_amount,
+                total_amount=cart.total,
+                customer_notes=validated_data.get('notes', '')
+            )
+            
+            # Create order items from cart items (and reduce inventory)
+            for cart_item in cart.items.all():
+                if cart_item.variant:
+                    unit_price = cart_item.variant.calculated_price
+                else:
+                    unit_price = cart_item.product.price
+                OrderItem.objects.create(
+                    order=order,
+                    product=cart_item.product,
+                    variant=cart_item.variant,
+                    product_name=cart_item.product.name,
+                    variant_name=cart_item.variant.name if cart_item.variant else '',
+                    sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
+                    quantity=cart_item.quantity,
+                    unit_price=unit_price,
+                    subtotal=unit_price * cart_item.quantity,
+                    total_price=unit_price * cart_item.quantity,
+                    requires_prescription=cart_item.product.prescription_required == 'required'
+                )
+                # Reduce inventory
+                if cart_item.product.track_inventory:
+                    if cart_item.variant:
+                        cart_item.variant.stock_quantity -= cart_item.quantity
+                        cart_item.variant.save(update_fields=['stock_quantity'])
+                    else:
+                        cart_item.product.stock_quantity -= cart_item.quantity
+                        cart_item.product.save(update_fields=['stock_quantity'])
+            
+            cart.is_active = False
+            cart.save(update_fields=['is_active'])
+            
+            from rest_framework_simplejwt.tokens import RefreshToken
+            from accounts.serializers import UserSerializer
+            
+            refresh = RefreshToken.for_user(user)
+            return {
+                'order': order,
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+                'user': UserSerializer(user).data
+            }
     🐍 orders\signals.py
 
 ================================================================================
@@ -8057,6 +8760,42 @@ def shipment_status_changed(sender, instance, created, **kwargs):
             order.status = Order.STATUS_DELIVERED
             order.delivered_at = instance.delivered_at
             order.save(update_fields=['status', 'delivered_at', 'updated_at'])
+    🐍 orders\tasks.py
+
+================================================================================
+FILE: orders\tasks.py
+SIZE: 990 bytes
+MODIFIED: 2026-05-28 14:03:22.824874
+================================================================================
+
+import logging
+from celery import shared_task
+from django.utils import timezone
+from .models import Order
+
+logger = logging.getLogger(__name__)
+
+@shared_task
+def release_expired_reservations():
+    """
+    Release stock for unpaid orders older than 15 minutes.
+    Called automatically every 5 minutes.
+    """
+    cutoff = timezone.now() - timezone.timedelta(minutes=15)
+    expired_orders = Order.objects.filter(
+        status=Order.STATUS_PENDING,
+        created_at__lte=cutoff,
+        paid_at__isnull=True
+    )
+    cancelled_count = 0
+    for order in expired_orders:
+        try:
+            order.cancel(reason="Reservation timeout - no payment within 15 minutes")
+            cancelled_count += 1
+            logger.info(f"Auto-cancelled order {order.order_number} due to timeout")
+        except Exception as e:
+            logger.error(f"Failed to auto-cancel order {order.order_number}: {e}")
+    return f"Cancelled {cancelled_count} expired orders"
     🐍 orders\tests.py
 
 ================================================================================
@@ -8254,6 +8993,124 @@ class OrderStatusTransitionTest(TestCase):
         self.order.status = 'cancelled'
         self.order.save()
         self.assertEqual(self.order.status, 'cancelled')
+      🐍 orders\tests\test_reservation_timeout.py
+
+================================================================================
+FILE: orders\tests\test_reservation_timeout.py
+SIZE: 3,687 bytes
+MODIFIED: 2026-05-28 14:57:18.057780
+================================================================================
+
+from django.test import TestCase
+from django.utils import timezone
+from datetime import timedelta
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from io import StringIO
+
+from orders.models import Order, OrderItem
+from products.models import Product, Manufacturer
+
+User = get_user_model()
+
+class ReservationTimeoutTest(TestCase):
+    def setUp(self):
+        # Create a manufacturer
+        self.manufacturer = Manufacturer.objects.create(
+            name='Test Manufacturer',
+            slug='test-manufacturer',
+            is_approved=True
+        )
+        
+        # Create a user (email optional)
+        self.user = User.objects.create_user(
+            username='testuser',
+            phone_number='09123456789',
+            password='pass'
+        )
+        
+        # Create a product
+        self.product = Product.objects.create(
+            name='Test Product',
+            slug='test-product',
+            sku='TEST001',
+            manufacturer=self.manufacturer,
+            price=100,
+            track_inventory=True,
+            stock_quantity=10,
+            is_active=True
+        )
+
+    def test_expired_order_cancelled_and_stock_restored(self):
+        # Create order with required fields
+        order = Order.objects.create(
+            user=self.user,
+            status='pending',
+            subtotal=self.product.price,
+            total_amount=self.product.price,
+            shipping_address={'city': 'Test'},
+            billing_address={'city': 'Test'}
+        )
+        # Add order item
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            product_name=self.product.name,
+            sku=self.product.sku,
+            quantity=1,
+            unit_price=self.product.price,
+            subtotal=self.product.price,
+            total_price=self.product.price
+        )
+        # Simulate stock deduction
+        self.product.stock_quantity = 9
+        self.product.save()
+
+        # Age the order
+        order.created_at = timezone.now() - timedelta(minutes=20)
+        order.save(update_fields=['created_at'])
+
+        # Run the management command
+        out = StringIO()
+        call_command('release_expired_orders', stdout=out)
+
+        order.refresh_from_db()
+        self.product.refresh_from_db()
+
+        self.assertEqual(order.status, 'cancelled')
+        self.assertIsNotNone(order.cancelled_at)
+        self.assertIn('Reservation timeout', order.staff_notes)
+        self.assertEqual(self.product.stock_quantity, 10)
+        self.assertIn(f"Cancelled order {order.order_number}", out.getvalue())
+
+    def test_non_expired_order_not_cancelled(self):
+        order = Order.objects.create(
+            user=self.user,
+            status='pending',
+            subtotal=self.product.price,
+            total_amount=self.product.price,
+            shipping_address={},
+            billing_address={}
+        )
+        OrderItem.objects.create(
+            order=order,
+            product=self.product,
+            product_name=self.product.name,
+            sku=self.product.sku,
+            quantity=1,
+            unit_price=self.product.price,
+            subtotal=self.product.price,
+            total_price=self.product.price
+        )
+        self.product.stock_quantity = 9
+        self.product.save()
+
+        call_command('release_expired_orders')
+        order.refresh_from_db()
+        self.product.refresh_from_db()
+
+        self.assertEqual(order.status, 'pending')
+        self.assertEqual(self.product.stock_quantity, 9)
       🐍 orders\tests\test_serializers.py
 
 ================================================================================
@@ -8773,23 +9630,71 @@ urlpatterns = [
  # Include router URLs
  path('', include(router.urls)),
 ]
+    🐍 orders\utils.py
+
+================================================================================
+FILE: orders\utils.py
+SIZE: 1,448 bytes
+MODIFIED: 2026-05-24 12:13:44.195531
+================================================================================
+
+from django.db import transaction
+from products.models import Product, ProductVariant
+from rest_framework import serializers
+
+def check_and_lock_stock(cart_items):
+    """
+    Lock product/variant rows and check stock availability.
+    Raises ValidationError if any item has insufficient stock.
+    """
+    product_ids = []
+    variant_ids = []
+    for item in cart_items:
+        if item.variant:
+            variant_ids.append(item.variant.id)
+        else:
+            product_ids.append(item.product.id)
+    
+    # Lock rows in database to prevent race conditions
+    if product_ids:
+        Product.objects.select_for_update().filter(id__in=product_ids)
+    if variant_ids:
+        ProductVariant.objects.select_for_update().filter(id__in=variant_ids)
+    
+    # Verify stock
+    for item in cart_items:
+        variant = item.variant
+        product = item.product
+        required = item.quantity
+        if variant:
+            if variant.track_inventory and variant.stock_quantity < required:
+                raise serializers.ValidationError(
+                    f"موجودی کافی برای {variant.name} وجود ندارد."
+                )
+        else:
+            if product.track_inventory and product.stock_quantity < required:
+                raise serializers.ValidationError(
+                    f"موجودی کافی برای {product.name} وجود ندارد."
+                )
     🐍 orders\views.py
 
 ================================================================================
 FILE: orders\views.py
-SIZE: 18,391 bytes
-MODIFIED: 2026-05-06 23:09:45.010096
+SIZE: 29,243 bytes
+MODIFIED: 2026-05-27 16:27:22.401820
 ================================================================================
 
-# orders/views.py
 import logging
+import uuid
+from django.core.cache import cache
 from django.db import transaction
 from django.utils.translation import gettext_lazy as _
 from django.shortcuts import get_object_or_404
-from rest_framework import viewsets, status, mixins, filters
+from rest_framework import viewsets, status, mixins, filters, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
 from django_filters.rest_framework import DjangoFilterBackend
 from products.models import Product, ProductVariant
 from .models import (
@@ -8802,33 +9707,64 @@ from .serializers import (
     UpdateCartItemSerializer, ApplyCouponSerializer,
     OrderListSerializer, OrderDetailSerializer, CreateOrderSerializer,
     CancelOrderSerializer, ShipmentSerializer, RefundSerializer,
-    CreateRefundSerializer
+    CreateRefundSerializer, GuestCheckoutSerializer
 )
 from payments.serializers import PaymentSerializer
 from promotions.models import Coupon, CouponUsage
+from accounts.models import OTP, User
+from accounts.serializers import UserSerializer
+from accounts.otp_service import send_verification_code
 
 from .permissions import IsOrderOwner, IsAdminOrReadOnly
 from .filters import OrderFilter
 from django.utils import timezone
+from utils.idempotency import IdempotencyHelper
+from . import serializers
 
 logger = logging.getLogger(__name__)
 
 
 class CartViewSet(viewsets.GenericViewSet):
     """ViewSet for managing shopping cart"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
     serializer_class = CartSerializer
     
     def get_queryset(self):
         """Get user's active cart"""
-        return Cart.objects.filter(user=self.request.user, is_active=True)
+        if self.request.user.is_authenticated:
+            return Cart.objects.filter(user=self.request.user, is_active=True)
+        else:
+            session_key = self.request.session.session_key
+            if not session_key:
+                self.request.session.save()
+                session_key = self.request.session.session_key
+            return Cart.objects.filter(session_id=session_key, user__isnull=True, is_active=True)
     
     def get_or_create_cart(self):
-        """Get or create active cart for current user"""
-        cart = Cart.objects.filter(user=self.request.user, is_active=True).first()
-        if not cart:
-            cart = Cart.objects.create(user=self.request.user)
-        return cart
+        """Get or create active cart for current user (authenticated) or session (anonymous)"""
+        user = self.request.user
+        session_key = self.request.session.session_key
+        
+        if not session_key:
+            self.request.session.save()
+            session_key = self.request.session.session_key
+        
+        if user.is_authenticated:
+            cart = Cart.objects.filter(user=user, is_active=True).first()
+            if cart:
+                return cart
+            anonymous_cart = Cart.objects.filter(session_id=session_key, user__isnull=True, is_active=True).first()
+            if anonymous_cart:
+                anonymous_cart.user = user
+                anonymous_cart.session_id = None
+                anonymous_cart.save()
+                return anonymous_cart
+            return Cart.objects.create(user=user)
+        else:
+            cart = Cart.objects.filter(session_id=session_key, user__isnull=True, is_active=True).first()
+            if not cart:
+                cart = Cart.objects.create(session_id=session_key)
+            return cart
     
     @action(detail=False, methods=['get'])
     def current(self, request):
@@ -8836,87 +9772,69 @@ class CartViewSet(viewsets.GenericViewSet):
         cart = self.get_or_create_cart()
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['post'])
     def add_item(self, request):
-        """Add item to cart"""
         serializer = AddToCartSerializer(data=request.data)
         if serializer.is_valid():
             cart = self.get_or_create_cart()
             product = serializer.validated_data['product']
             variant = serializer.validated_data['variant']
             quantity = serializer.validated_data['quantity']
-            
-            # Check if item already exists in cart
-            cart_item = CartItem.objects.filter(
+
+            cart_item, created = CartItem.objects.get_or_create(
                 cart=cart,
                 product=product,
-                variant=variant
-            ).first()
-            
-            if cart_item:
-                # Update existing item
+                variant=variant,
+                defaults={'quantity': quantity, 'unit_price': variant.calculated_price if variant else product.price}
+            )
+            if not created:
                 cart_item.quantity += quantity
                 cart_item.save()
-            else:
-                # Create new item
-                unit_price = variant.calculated_price if variant else product.price
-                CartItem.objects.create(
-                    cart=cart,
-                    product=product,
-                    variant=variant,
-                    quantity=quantity,
-                    unit_price=unit_price
-                )
-            
-            # Return updated cart
+
+            # If coupon exists and new item is not applicable, remove coupon
+            if cart.coupon and not cart.coupon.is_applicable_to_item(cart_item):
+                cart.coupon = None
+                cart.save(update_fields=['coupon'])
+
             cart_serializer = self.get_serializer(cart)
             return Response(cart_serializer.data)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
+        return Response(serializer.errors, status=400)
+
     @action(detail=False, methods=['post'])
     def update_item(self, request):
-        """Update cart item quantity"""
         item_id = request.data.get('item_id')
         if not item_id:
-            return Response(
-                {'error': _('Item ID is required')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Get cart item
+            return Response({'error': 'Item ID is required'}, status=400)
+
         cart = self.get_or_create_cart()
         try:
             cart_item = CartItem.objects.get(cart=cart, id=item_id)
         except CartItem.DoesNotExist:
-            return Response(
-                {'error': _('Item not found in cart')},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Update quantity
-        serializer = UpdateCartItemSerializer(
-            data=request.data,
-            context={'cart_item': cart_item}
-        )
+            return Response({'error': 'Item not found'}, status=404)
+
+        serializer = UpdateCartItemSerializer(data=request.data, context={'cart_item': cart_item})
         if serializer.is_valid():
             quantity = serializer.validated_data['quantity']
-            
             if quantity == 0:
-                # Remove item from cart
                 cart_item.delete()
             else:
-                # Update quantity
                 cart_item.quantity = quantity
                 cart_item.save()
-            
-            # Return updated cart
+
+            # Clear coupon if there are no eligible items left
+            if cart.coupon:
+                eligible_exists = any(cart.coupon.is_applicable_to_item(item) for item in cart.items.all())
+                if not eligible_exists:
+                    cart.coupon = None
+                    cart.save(update_fields=['coupon'])
+
             cart_serializer = self.get_serializer(cart)
             return Response(cart_serializer.data)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
+        return Response(serializer.errors, status=400)
+
     @action(detail=False, methods=['post'])
     def remove_item(self, request):
         """Remove item from cart"""
@@ -8927,7 +9845,6 @@ class CartViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Get cart item
         cart = self.get_or_create_cart()
         try:
             cart_item = CartItem.objects.get(cart=cart, id=item_id)
@@ -8937,10 +9854,15 @@ class CartViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Remove item
         cart_item.delete()
-        
-        # Return updated cart
+
+        # Clear coupon if there are no eligible items left
+        if cart.coupon:
+            eligible_exists = any(cart.coupon.is_applicable_to_item(item) for item in cart.items.all())
+            if not eligible_exists:
+                cart.coupon = None
+                cart.save(update_fields=['coupon'])
+
         cart_serializer = self.get_serializer(cart)
         return Response(cart_serializer.data)
     
@@ -8949,123 +9871,326 @@ class CartViewSet(viewsets.GenericViewSet):
         """Clear cart"""
         cart = self.get_or_create_cart()
         cart.items.all().delete()
-        
-        # Return empty cart
         cart_serializer = self.get_serializer(cart)
         return Response(cart_serializer.data)
-    
+        
     @action(detail=False, methods=['post'])
     def apply_coupon(self, request):
         code = request.data.get('code')
         if not code:
-            return Response({'error': 'لطفا کد تخفیف را وارد کنید'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'لطفا کد تخفیف را وارد کنید'}, status=400)
 
         cart = self.get_or_create_cart()
+        user = request.user if request.user.is_authenticated else None
+        # For anonymous, use session key instead of user id
+        user_id = user.id if user else request.session.session_key
+
+        # Build idempotency key unique for this coupon, user, and cart
+        key = IdempotencyHelper.generate_key('coupon', code, user_id, cart.id)
+
+        def process_apply():
+            # ---- existing coupon validation logic ----
+            try:
+                coupon = Coupon.objects.get(code=code, is_active=True)
+            except Coupon.DoesNotExist:
+                raise serializers.ValidationError('کد تخفیف نامعتبر است')
+
+            now = timezone.now()
+            if coupon.valid_from and coupon.valid_from > now:
+                raise serializers.ValidationError('این کد تخفیف هنوز فعال نشده است')
+            if coupon.valid_until and coupon.valid_until < now:
+                raise serializers.ValidationError('این کد تخفیف منقضی شده است')
+
+            if cart.subtotal < coupon.minimum_order_amount:
+                raise serializers.ValidationError(f'حداقل مبلغ سفارش برای این کد {coupon.minimum_order_amount} تومان است')
+
+            if coupon.usage_limit and coupon.used_count >= coupon.usage_limit:
+                raise serializers.ValidationError('این کد تخفیف به حداکثر تعداد استفاده رسیده است')
+
+            if user and coupon.usage_limit_per_user:
+                user_usage_count = CouponUsage.objects.filter(coupon=coupon, user=user).count()
+                if user_usage_count >= coupon.usage_limit_per_user:
+                    raise serializers.ValidationError('شما قبلاً از این کد تخفیف استفاده کرده‌اید')
+
+            # Apply coupon to cart
+            cart.coupon = coupon
+            cart.save()
+
+            # Prepare optional partial eligibility message
+            eligible_count = sum(1 for item in cart.items.all() if coupon.is_applicable_to_item(item))
+            total_count = cart.items.count()
+            message = None
+            if eligible_count < total_count:
+                message = f"کد تخفیف فقط برای {eligible_count} محصول از {total_count} محصول قابل استفاده است."
+
+            # Serialize cart and include message if needed
+            serializer = CartSerializer(cart, context={'request': request})
+            response_data = serializer.data
+            if message:
+                response_data['coupon_message'] = message
+            return response_data, 200
 
         try:
-            coupon = Coupon.objects.get(code=code, is_active=True)
-        except Coupon.DoesNotExist:
-            return Response({'error': 'کد تخفیف نامعتبر است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check if coupon is valid (dates)
-        now = timezone.now()
-        if coupon.valid_from and coupon.valid_from > now:
-            return Response({'error': 'این کد تخفیف هنوز فعال نشده است'}, status=status.HTTP_400_BAD_REQUEST)
-        if coupon.valid_until and coupon.valid_until < now:
-            return Response({'error': 'این کد تخفیف منقضی شده است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check minimum order amount
-        if cart.subtotal < coupon.minimum_order_amount:
-            return Response({'error': f'حداقل مبلغ سفارش برای این کد {coupon.minimum_order_amount} تومان است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check global usage limit
-        if coupon.usage_limit and coupon.used_count >= coupon.usage_limit:
-            return Response({'error': 'این کد تخفیف به حداکثر تعداد استفاده رسیده است'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Check per-user usage limit
-        if request.user.is_authenticated and coupon.usage_limit_per_user:
-            user_usage_count = CouponUsage.objects.filter(coupon=coupon, user=request.user).count()
-            if user_usage_count >= coupon.usage_limit_per_user:
-                return Response({'error': 'شما قبلاً از این کد تخفیف استفاده کرده‌اید'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Apply coupon to cart
-        cart.coupon = coupon
-        cart.save()
-
-        # Return updated cart data
-        serializer = CartSerializer(cart, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+            data, status_code, from_cache = IdempotencyHelper.get_or_create(key, 60*60*48, process_apply)
+            return Response(data, status=status_code)
+        except serializers.ValidationError as e:
+            return Response({'error': str(e)}, status=400)
 
     @action(detail=False, methods=['post'])
     def upload_prescription(self, request):
         """Upload prescription file"""
+        if not request.user.is_authenticated:
+            return Response({'error': 'لطفا وارد حساب کاربری خود شوید'}, status=status.HTTP_401_UNAUTHORIZED)
         cart = self.get_or_create_cart()
-        
         if 'prescription_file' not in request.FILES:
-            return Response(
-                {'error': _('Prescription file is required')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Save prescription file
+            return Response({'error': _('Prescription file is required')}, status=status.HTTP_400_BAD_REQUEST)
         cart.prescription_file = request.FILES['prescription_file']
         cart.save(update_fields=['prescription_file'])
-        
-        # Return updated cart
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
     
     @action(detail=False, methods=['post'])
     def set_addresses(self, request):
-        """Set shipping and billing addresses"""
+        """Set shipping and billing addresses (requires authentication)"""
+        if not request.user.is_authenticated:
+            return Response({'error': 'لطفا وارد حساب کاربری خود شوید'}, status=status.HTTP_401_UNAUTHORIZED)
         shipping_address_id = request.data.get('shipping_address_id')
         billing_address_id = request.data.get('billing_address_id')
         use_same_address = request.data.get('use_same_address', False)
-        
         if not shipping_address_id:
-            return Response(
-                {'error': _('Shipping address ID is required')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+            return Response({'error': _('Shipping address ID is required')}, status=status.HTTP_400_BAD_REQUEST)
         cart = self.get_or_create_cart()
-        
-        # Set shipping address
         from accounts.models import UserAddress
         try:
-            shipping_address = UserAddress.objects.get(
-                id=shipping_address_id,
-                user=request.user
-            )
+            shipping_address = UserAddress.objects.get(id=shipping_address_id, user=request.user)
             cart.shipping_address = shipping_address
         except UserAddress.DoesNotExist:
-            return Response(
-                {'error': _('Invalid shipping address')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Set billing address
+            return Response({'error': _('Invalid shipping address')}, status=status.HTTP_400_BAD_REQUEST)
         if use_same_address:
             cart.billing_address = shipping_address
         elif billing_address_id:
             try:
-                billing_address = UserAddress.objects.get(
-                    id=billing_address_id,
-                    user=request.user
-                )
+                billing_address = UserAddress.objects.get(id=billing_address_id, user=request.user)
                 cart.billing_address = billing_address
             except UserAddress.DoesNotExist:
-                return Response(
-                    {'error': _('Invalid billing address')},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
+                return Response({'error': _('Invalid billing address')}, status=status.HTTP_400_BAD_REQUEST)
         cart.save(update_fields=['shipping_address', 'billing_address'])
-        
-        # Return updated cart
         serializer = self.get_serializer(cart)
         return Response(serializer.data)
 
+    def merge_cart(self, cart_from, cart_to):
+        """Merge items from one cart into another, then delete the source cart"""
+        for item in cart_from.items.all():
+            existing_item = cart_to.items.filter(product=item.product, variant=item.variant).first()
+            if existing_item:
+                existing_item.quantity += item.quantity
+                existing_item.save()
+            else:
+                item.cart = cart_to
+                item.save()
+        cart_from.delete()
+
+    # ==================== GUEST CHECKOUT WITH OTP ====================
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def guest_checkout_request_otp(self, request):
+        """Step 1: Send OTP and store guest data + cart ID in cache"""
+        phone = request.data.get('phone')
+        guest_data = request.data.get('guest_data')
+        
+        if not phone:
+            return Response({'error': 'شماره موبایل الزامی است'}, status=status.HTTP_400_BAD_REQUEST)
+        if not guest_data:
+            return Response({'error': 'داده‌های ناقص'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get the current anonymous cart
+        cart = self.get_or_create_cart()
+        if not cart or not cart.items.exists():
+            return Response({'error': 'سبد خرید خالی است'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        reg_id = str(uuid.uuid4())
+        cache.set(f'guest_checkout_{reg_id}', {
+            'phone': phone,
+            'guest_data': guest_data,
+            'cart_id': cart.id,
+            'session_key': self.request.session.session_key
+        }, timeout=600)
+        
+        try:
+            send_verification_code(phone)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        return Response({'reg_id': reg_id, 'message': 'کد تایید ارسال شد'})
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def guest_checkout_verify_otp(self, request):
+        """Step 2: Verify OTP, create user & order, return tokens"""
+        reg_id = request.data.get('reg_id')
+        code = request.data.get('code')
+        
+        if not reg_id or not code:
+            return Response({'error': 'شناسه و کد تایید الزامی است'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        cached = cache.get(f'guest_checkout_{reg_id}')
+        if not cached:
+            return Response({'error': 'زمان جلسه به اتمام رسیده است. لطفاً دوباره اقدام کنید.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        
+        phone = cached['phone']
+        guest_data = cached['guest_data']
+        cart_id = cached['cart_id']
+        session_key = cached['session_key']
+        
+        # Verify OTP
+        try:
+            otp = OTP.objects.get(phone_number=phone)
+        except OTP.DoesNotExist:
+            return Response({'error': 'درخواست کد تایید یافت نشد'}, status=status.HTTP_404_NOT_FOUND)
+        
+        if not otp.is_valid() or otp.code != code:
+            return Response({'error': 'کد نامعتبر یا منقضی شده'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Mark OTP as verified
+        otp.is_verified = True
+        otp.save()
+        
+        # Find or create user by phone
+        user = User.objects.filter(phone_number=phone).first()
+        if not user:
+            user = User.objects.create_user(
+                username=phone,
+                email=guest_data.get('guest_email', ''),
+                phone_number=phone,
+                first_name=guest_data['guest_first_name'],
+                last_name=guest_data['guest_last_name'],
+                user_type='customer',
+                is_active=True
+            )
+        else:
+            if not user.first_name and guest_data.get('guest_first_name'):
+                user.first_name = guest_data['guest_first_name']
+            if not user.last_name and guest_data.get('guest_last_name'):
+                user.last_name = guest_data['guest_last_name']
+            if guest_data.get('guest_email') and not user.email:
+                user.email = guest_data['guest_email']
+            user.save()
+        
+        # Retrieve the cart (must still exist)
+        try:
+            cart = Cart.objects.get(id=cart_id, session_id=session_key, user__isnull=True, is_active=True)
+        except Cart.DoesNotExist:
+            return Response({'error': 'سبد خرید یافت نشد'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Transfer cart to user
+        cart.user = user
+        cart.session_id = None
+        cart.save()
+        
+        # Create shipping address
+        from accounts.models import UserAddress
+        address = UserAddress.objects.create(
+            user=user,
+            address_type='shipping',
+            first_name=guest_data['address_first_name'],
+            last_name=guest_data['address_last_name'],
+            address_line_1=guest_data['address_line_1'],
+            address_line_2=guest_data.get('address_line_2', ''),
+            city=guest_data['city'],
+            state_province=guest_data['state_province'],
+            postal_code=guest_data['postal_code'],
+            phone_number=guest_data.get('phone_number', ''),
+            is_default=True
+        )
+        
+        # Build address JSON
+        address_json = {
+            'recipient_name': f"{address.first_name} {address.last_name}",
+            'recipient_phone': address.phone_number,
+            'province': address.state_province,
+            'city': address.city,
+            'district': address.address_line_2 or '',
+            'street_address': address.address_line_1,
+            'postal_code': address.postal_code,
+            'type': address.address_type
+        }
+        
+        # Create order
+        order = Order.objects.create(
+            user=user,
+            status=Order.STATUS_PENDING,
+            shipping_address=address_json,
+            billing_address=address_json,
+            payment_method=guest_data['payment_method'],
+            subtotal=cart.subtotal,
+            discount_amount=cart.discount_amount,
+            total_amount=cart.total,
+            customer_notes=guest_data.get('notes', '')
+        )
+        
+        # Create order items
+        for cart_item in cart.items.all():
+            if cart_item.variant:
+                unit_price = cart_item.variant.calculated_price
+            else:
+                unit_price = cart_item.product.price
+            OrderItem.objects.create(
+                order=order,
+                product=cart_item.product,
+                variant=cart_item.variant,
+                product_name=cart_item.product.name,
+                variant_name=cart_item.variant.name if cart_item.variant else '',
+                sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
+                quantity=cart_item.quantity,
+                unit_price=unit_price,
+                subtotal=unit_price * cart_item.quantity,
+                total_price=unit_price * cart_item.quantity,
+                requires_prescription=cart_item.product.prescription_required == 'required'
+            )
+            # Reduce inventory
+            if cart_item.product.track_inventory:
+                if cart_item.variant:
+                    cart_item.variant.stock_quantity -= cart_item.quantity
+                    cart_item.variant.save(update_fields=['stock_quantity'])
+                else:
+                    cart_item.product.stock_quantity -= cart_item.quantity
+                    cart_item.product.save(update_fields=['stock_quantity'])
+        
+        cart.is_active = False
+        cart.save(update_fields=['is_active'])
+        
+        # Generate JWT tokens
+        refresh = RefreshToken.for_user(user)
+        cache.delete(f'guest_checkout_{reg_id}')
+        
+        return Response({
+            'order_id': order.id,
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.AllowAny])
+    def guest_checkout(self, request):
+        """Guest checkout – creates user, transfers cart, places order, returns tokens (no OTP)"""
+        serializer = GuestCheckoutSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            result = serializer.save()
+            return Response({
+                'order_id': result['order'].id,
+                'access': result['access'],
+                'refresh': result['refresh'],
+                'user': result['user']
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'])
+    def remove_coupon(self, request):
+        cart = self.get_or_create_cart()
+        if cart.coupon:
+            cart.coupon = None
+            cart.save(update_fields=['coupon'])
+        serializer = self.get_serializer(cart)
+        return Response(serializer.data)
 
 class OrderViewSet(viewsets.ModelViewSet):
     """ViewSet for managing orders"""
@@ -9100,11 +10225,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
         if serializer.is_valid():
             order = serializer.save()
-            
-            # Return order details
             detail_serializer = OrderDetailSerializer(order)
             return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
-        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['post'])
@@ -9115,21 +10237,13 @@ class OrderViewSet(viewsets.ModelViewSet):
             data=request.data,
             context={'order': order}
         )
-        
         if serializer.is_valid():
             reason = serializer.validated_data.get('reason', '')
             try:
                 order.cancel(reason)
-                return Response(
-                    {'message': _('Order cancelled successfully')},
-                    status=status.HTTP_200_OK
-                )
+                return Response({'message': _('Order cancelled successfully')}, status=status.HTTP_200_OK)
             except ValueError as e:
-                return Response(
-                    {'error': str(e)},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['get'])
@@ -9168,7 +10282,6 @@ class ShipmentViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
     
     def get_queryset(self):
-        """Get shipments based on user role"""
         user = self.request.user
         if user.is_staff:
             return Shipment.objects.all()
@@ -9188,31 +10301,22 @@ class RefundViewSet(mixins.CreateModelMixin,
     ordering = ['-requested_at']
     
     def get_queryset(self):
-        """Get refunds based on user role"""
         user = self.request.user
         if user.is_staff:
             return Refund.objects.all()
         return Refund.objects.filter(order__user=user)
     
     def get_serializer_class(self):
-        """Return appropriate serializer based on action"""
         if self.action == 'create':
             return CreateRefundSerializer
         return RefundSerializer
     
     def create(self, request, *args, **kwargs):
-        """Create refund request"""
-        serializer = self.get_serializer(
-            data=request.data,
-            context={'request': request}
-        )
+        serializer = self.get_serializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             refund = serializer.save()
-            
-            # Return refund details
             detail_serializer = RefundSerializer(refund)
             return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
-        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -9229,7 +10333,6 @@ class PaymentViewSet(mixins.RetrieveModelMixin,
     ordering = ['-created_at']
     
     def get_queryset(self):
-        """Get payments based on user role"""
         user = self.request.user
         if user.is_staff:
             return Payment.objects.all()
@@ -9237,23 +10340,12 @@ class PaymentViewSet(mixins.RetrieveModelMixin,
     
     @action(detail=True, methods=['post'])
     def process_payment(self, request, pk=None):
-        """Process payment (placeholder for payment gateway integration)"""
         if not request.user.is_staff:
-            return Response(
-                {'error': _('Permission denied')},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
+            return Response({'error': _('Permission denied')}, status=status.HTTP_403_FORBIDDEN)
         payment = self.get_object()
-        
-        # This is a placeholder for payment processing
-        # In a real application, this would integrate with a payment gateway
-        
-        # Simulate successful payment
         payment.status = Payment.STATUS_COMPLETED
         payment.transaction_id = f"SIMULATED-{payment.id}"
         payment.save()
-        
         serializer = self.get_serializer(payment)
         return Response(serializer.data)
     🐍 payments\__init__.py
@@ -11912,46 +13004,56 @@ class PaymentDisputeViewSet(viewsets.ReadOnlyModelViewSet):
 
 ================================================================================
 FILE: pharma_api\__init__.py
-SIZE: 0 bytes
-MODIFIED: 2025-08-13 17:41:48.660737
+SIZE: 70 bytes
+MODIFIED: 2026-05-28 14:14:13.974602
 ================================================================================
 
+from .celery_app import app as celery_app
+
+__all__ = ('celery_app',)
     🐍 pharma_api\asgi.py
 
 ================================================================================
 FILE: pharma_api\asgi.py
-SIZE: 413 bytes
-MODIFIED: 2025-08-13 17:41:48.644738
+SIZE: 174 bytes
+MODIFIED: 2026-05-27 13:34:03.903229
 ================================================================================
 
-"""
-ASGI config for pharma_api project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/4.2/howto/deployment/asgi/
-"""
-
 import os
-
 from django.core.asgi import get_asgi_application
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'pharma_api.settings')
 
 application = get_asgi_application()
+    🐍 pharma_api\celery_app.py
+
+================================================================================
+FILE: pharma_api\celery_app.py
+SIZE: 232 bytes
+MODIFIED: 2026-05-28 14:21:26.042594
+================================================================================
+
+import os
+from celery import Celery
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'pharma_api.settings')
+app = Celery('pharma_api')
+app.config_from_object('django.conf:settings', namespace='CELERY')
+app.autodiscover_tasks()
     🐍 pharma_api\settings.py
 
 ================================================================================
 FILE: pharma_api\settings.py
-SIZE: 6,407 bytes
-MODIFIED: 2026-05-09 16:18:29.724580
+SIZE: 9,293 bytes
+MODIFIED: 2026-05-31 00:55:47.275977
 ================================================================================
 
 import os
 from pathlib import Path
 from decouple import config
 from datetime import timedelta
+from celery.schedules import crontab
+
 
 # -------------------
 # BASE SETTINGS
@@ -11977,6 +13079,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
 
     # Third Party
     'rest_framework',
@@ -11984,8 +13087,8 @@ INSTALLED_APPS = [
     'django_extensions',
     'corsheaders',
     'rest_framework.authtoken',
-    'admin_interface',
-    'colorfield',
+    # 'admin_interface',
+    # 'colorfield',
     
     # Local apps
     'accounts',
@@ -12166,26 +13269,54 @@ else:
 
 UNFOLD = {
     "SITE_TITLE": "Pharma Admin",
-    "SITE_HEADER": "Pharmacy Store Admin",
-    "SITE_SUBHEADER": "Manage your pharmacy inventory and orders",
+    "SITE_HEADER": "Pharmacy Store",
+    "SITE_SUBHEADER": "Manage orders, prescriptions & inventory",
     "SITE_URL": "/",
     "DARK_MODE": True,
+    "COLORS": {
+        "primary": "#0d9488",
+        "secondary": "#64748b",
+        "success": "#10b981",
+        "danger": "#ef4444",
+        "warning": "#f59e0b",
+    },
+    "TABS": [
+        {
+            "models": ["accounts.User", "accounts.UserProfile", "accounts.PharmacyLicense"],
+            "items": [
+                {"title": "All Users", "link": "/admin/accounts/user/"},
+                {"title": "Pending Licenses", "link": "/admin/accounts/pharmacylicense/?status__exact=pending"},
+                {"title": "User Profiles", "link": "/admin/accounts/userprofile/"},
+            ],
+        },
+        {
+            "models": ["orders.Order", "orders.Refund", "orders.Shipment"],
+            "items": [
+                {"title": "Orders", "link": "/admin/orders/order/"},
+                {"title": "Pending Prescriptions", "link": "/admin/orders/order/?prescription_file__isnull=False&prescription_verified__exact=0"},
+                {"title": "Refunds", "link": "/admin/orders/refund/"},
+            ],
+        },
+    ],
     "SIDEBAR": {
         "show_search": True,
         "show_all_applications": True,
+        "navigation": [
+            {"title": "Dashboard", "icon": "dashboard", "link": "/admin/"},
+            {"title": "Orders", "icon": "shopping_cart", "models": ["orders.Order"]},
+            {"title": "Products", "icon": "inventory", "models": ["products.Product"]},
+            {"title": "Support", "icon": "support_agent", "models": ["support.SupportTicket"]},
+        ],
     },
-    # Optional: You can add a custom menu here
-    # "TABS": [
-    #     {
-    #         "models": ["app_label.ModelName"],
-    #         "items": [...]
-    #     },
-    # ],
 }
 
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://localhost:6379/1',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
     }
 }
 
@@ -12201,12 +13332,60 @@ LANGUAGE_CODE = 'fa'
 USE_I18N = True
 USE_L10N = True 
 USE_TZ = True
+
+SMS_IR_API_KEY = config('SMS_IR_API_KEY', default='')
+SMS_IR_VERIFY_TEMPLATE_ID = config('SMS_IR_VERIFY_TEMPLATE_ID', default='')
+MOCK_SMS = config('MOCK_SMS', default=False, cast=bool)
+SMS_IR_SANDBOX = config('SMS_IR_SANDBOX', default=False, cast=bool)
+SMS_IR_LINE_NUMBER = config('SMS_IR_LINE_NUMBER', default=0, cast=int)
+
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+CELERY_BEAT_SCHEDULE = {
+    'release-expired-orders': {
+        'task': 'orders.tasks.release_expired_reservations',
+        'schedule': crontab(minute='*/5'),  # every 5 minutes
+    },
+}
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'orders': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
     🐍 pharma_api\urls.py
 
 ================================================================================
 FILE: pharma_api\urls.py
-SIZE: 1,890 bytes
-MODIFIED: 2026-05-07 02:05:59.191530
+SIZE: 1,892 bytes
+MODIFIED: 2026-05-29 00:06:36.254299
 ================================================================================
 
 from django.contrib import admin
@@ -12218,6 +13397,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, Spec
 API_TITLE = 'Pharma API'
 API_DESCRIPTION = 'A comprehensive API for pharmaceutical e-commerce'
 API_VERSION = 'v1'
+
 
 urlpatterns = [
     # Django admin
@@ -12921,8 +14101,8 @@ class Command(BaseCommand):
 
 ================================================================================
 FILE: products\models.py
-SIZE: 16,362 bytes
-MODIFIED: 2026-05-07 02:33:11.594302
+SIZE: 16,394 bytes
+MODIFIED: 2026-05-27 15:47:41.898356
 ================================================================================
 
 import uuid
@@ -12931,6 +14111,7 @@ from django.utils.translation import gettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.conf import settings
 from django.utils import timezone
+from django.db.models import Q
 
 
 class Category(models.Model):
@@ -14659,8 +15840,8 @@ urlpatterns = [
 
 ================================================================================
 FILE: products\views.py
-SIZE: 14,031 bytes
-MODIFIED: 2026-05-08 01:24:45.335311
+SIZE: 14,360 bytes
+MODIFIED: 2026-05-31 00:35:02.378058
 ================================================================================
 
 import logging
@@ -14963,7 +16144,14 @@ class ProductImageViewSet(viewsets.ModelViewSet):
         if product_slug:
             return ProductImage.objects.filter(product__slug=product_slug)
         return ProductImage.objects.all()
-
+    
+    @action(detail=True, methods=['post'])
+    def set_primary(self, request, pk=None):
+        image = self.get_object()
+        ProductImage.objects.filter(product=image.product, is_primary=True).update(is_primary=False)
+        image.is_primary = True
+        image.save()
+        return Response({'status': 'ok'})
 
 class BatchViewSet(viewsets.ModelViewSet):
     """ViewSet for managing product batches"""
@@ -15406,8 +16594,8 @@ class PromotionFilter(django_filters.FilterSet):
 
 ================================================================================
 FILE: promotions\models.py
-SIZE: 21,416 bytes
-MODIFIED: 2026-05-07 02:31:05.959354
+SIZE: 22,203 bytes
+MODIFIED: 2026-05-27 13:53:21.561321
 ================================================================================
 
 import uuid
@@ -15570,6 +16758,24 @@ class Coupon(models.Model):
             order=order,
             discount_amount=order.coupon_discount
         )
+
+    def is_applicable_to_item(self, cart_item):
+        """Return True if this coupon can be applied to the given cart item."""
+        product = cart_item.product
+
+        # If coupon has specific products, item must be one of them
+        if self.applicable_products.exists():
+            if product not in self.applicable_products.all():
+                return False
+
+        # If coupon has specific categories, item must belong to at least one of them
+        if self.applicable_categories.exists():
+            product_cats = product.categories.all()
+            if not product_cats.filter(id__in=self.applicable_categories.values_list('id', flat=True)).exists():
+                return False
+
+        # If no restrictions, always applicable
+        return True
 
 
 class CouponUsage(models.Model):
@@ -22211,6 +23417,40 @@ SIZE: 0 bytes
 MODIFIED: 2025-08-13 17:42:13.978401
 ================================================================================
 
+    🐍 utils\idempotency.py
+
+================================================================================
+FILE: utils\idempotency.py
+SIZE: 962 bytes
+MODIFIED: 2026-05-27 16:08:56.070639
+================================================================================
+
+from django.core.cache import cache
+import json
+
+class IdempotencyHelper:
+    @staticmethod
+    def get_or_create(key, ttl_seconds, processor_func):
+        """
+        key: string, the idempotency key
+        ttl_seconds: int, time to live in seconds
+        processor_func: callable that returns (response_data, status_code)
+        Returns tuple (response_data, status_code, from_cache)
+        """
+        cached = cache.get(key)
+        if cached is not None:
+            return cached['data'], cached['status'], True
+
+        # Execute the processor
+        data, status = processor_func()
+        # Store response in cache
+        cache.set(key, {'data': data, 'status': status}, timeout=ttl_seconds)
+        return data, status, False
+
+    @staticmethod
+    def generate_key(prefix, *identifiers):
+        """Generate a namespaced key from identifiers."""
+        return f"idemp:{prefix}:" + ":".join(str(i) for i in identifiers)
     🐍 utils\mixins.py
 
 ================================================================================
@@ -22247,8 +23487,8 @@ MODIFIED: 2025-08-13 17:42:13.979038
 
 ================================================================================
 FILE: requirements.txt
-SIZE: 827 bytes
-MODIFIED: 2026-05-07 01:46:02.707730
+SIZE: 905 bytes
+MODIFIED: 2026-05-26 11:46:27.617993
 ================================================================================
 
 --index-url https://mirror2.chabokan.net/pypi/simple/
@@ -22287,12 +23527,51 @@ django-unfold
 
 # Payments (optional – for Stripe integration)
 # stripe>=7.8,<8.0
+smsir-python
+channels>=4.0,<5.0
+daphne>=4.0,<5.0
+channels-redis>=4.0,<5.0
+  📄 celerybeat-schedule.bak
+
+================================================================================
+FILE: celerybeat-schedule.bak
+SIZE: 91 bytes
+MODIFIED: 2026-05-28 18:04:59.997999
+================================================================================
+
+'entries', (0, 332)
+'__version__', (512, 20)
+'tz', (1024, 26)
+'utc_enabled', (1536, 4)
+  📄 celerybeat-schedule.dat
+
+================================================================================
+FILE: celerybeat-schedule.dat
+SIZE: 1,540 bytes
+MODIFIED: 2026-05-28 18:09:59.991972
+================================================================================
+
+A      }release-expired-orderscelery.beat
+ScheduleEntry(release-expired-orders)orders.tasks.release_expired_reservationsdatetimedatetimeC
+ê  ¯ÐbuiltinsgetattrzoneinfoZoneInfo	_unpickleRAsia/TehranKRRK)celery.schedulescrontab(*/5*hhhtR}b)}}tRs.                                                                                                                                                                                    	       5.6.3.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   Asia/Tehran.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      .
+  📄 celerybeat-schedule.dir
+
+================================================================================
+FILE: celerybeat-schedule.dir
+SIZE: 91 bytes
+MODIFIED: 2026-05-28 18:09:59.997004
+================================================================================
+
+'entries', (0, 332)
+'__version__', (512, 20)
+'tz', (1024, 26)
+'utc_enabled', (1536, 4)
 
 ================================================================================
 📊 PROJECT SUMMARY
 ================================================================================
-Total files bundled: 136
-Total size: 800,368 bytes
+Total files bundled: 147
+Total size: 854,081 bytes
 
 📱 DJANGO APPS (9):
   • Accounts
@@ -22305,7 +23584,7 @@ Total size: 800,368 bytes
   • Reviews
   • Support
 
-🗄️  MODELS (62):
+🗄️  MODELS (63):
   • Answer
   • AnswerVote
   • Batch
@@ -22326,7 +23605,7 @@ Total size: 800,368 bytes
   • FunnelEntry
   • FunnelStep
   • KnowledgeBaseArticle
-  ... and 42 more
+  ... and 43 more
 
 👁️  VIEWS (5):
   • track_event
@@ -22335,7 +23614,7 @@ Total size: 800,368 bytes
   • track_search_query
   • update_user_session
 
-🔗 URL PATTERNS (10):
+🔗 URL PATTERNS (13):
   • __debug__/
   • admin/
   • api/docs/redoc/
@@ -22345,9 +23624,12 @@ Total size: 800,368 bytes
   • auth/login/
   • auth/logout/
   • auth/refresh/
+  • auth/request-otp/
+  • auth/set_password_with_otp/
+  • auth/verify-otp/
   • auth/verify/
 
-📦 SERIALIZERS (108):
+📦 SERIALIZERS (109):
   • AddToCartSerializer
   • AnalyticsSummarySerializer
   • AnswerCreateSerializer
@@ -22372,6 +23654,7 @@ Total size: 800,368 bytes
         dummy_data.py
     managers.py
     models.py
+    otp_service.py
     permissions.py
     serializers.py
       __init__.py
@@ -22385,8 +23668,7 @@ Total size: 800,368 bytes
     apps.py
     filters.py
     models.py
-    permissions.py
-  ... and 116 more files
+  ... and 127 more files
 
-🕒 Bundle created: 2026-05-20 01:44:41
+🕒 Bundle created: 2026-05-31 23:17:28
 ================================================================================

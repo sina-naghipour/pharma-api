@@ -19,6 +19,13 @@ from accounts.serializers import UserSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 
 
+import uuid
+from decimal import Decimal
+from django.core.cache import cache
+from utils.idempotency import IdempotencyHelper
+
+
+
 class CartItemSerializer(serializers.ModelSerializer):
     """Serializer for cart items"""
     product_details = serializers.SerializerMethodField()
@@ -118,6 +125,18 @@ class CartSerializer(serializers.ModelSerializer):
     shipping_address_details = serializers.SerializerMethodField()
     billing_address_details = serializers.SerializerMethodField()
     
+    coupon_code = serializers.SerializerMethodField()
+    coupon_discount_value = serializers.SerializerMethodField()
+    coupon_discount_type = serializers.SerializerMethodField()
+
+    def get_coupon_code(self, obj):
+        return obj.coupon.code if obj.coupon else None
+
+    def get_coupon_discount_value(self, obj):
+        return obj.coupon.discount_value if obj.coupon else None
+
+    def get_coupon_discount_type(self, obj):
+        return obj.coupon.discount_type if obj.coupon else None
     class Meta:
         model = Cart
         fields = [
@@ -126,12 +145,14 @@ class CartSerializer(serializers.ModelSerializer):
             'has_out_of_stock_items', 'shipping_address', 'billing_address',
             'shipping_address_details', 'billing_address_details',
             'prescription_file', 'prescription_verified',
-            'coupon', 'created_at', 'updated_at'
+            'coupon', 'created_at', 'updated_at',
+            'coupon_code', 'coupon_discount_value', 'coupon_discount_type'   
         ]
         read_only_fields = [
             'id', 'user', 'subtotal', 'total', 'discount_amount',
             'total_items', 'requires_prescription', 'has_out_of_stock_items',
-            'prescription_verified', 'created_at', 'updated_at'
+            'prescription_verified', 'created_at', 'updated_at',
+            'coupon_code', 'coupon_discount_value', 'coupon_discount_type'
         ]
     
     def get_shipping_address_details(self, obj):
@@ -322,17 +343,18 @@ class OrderDetailSerializer(serializers.ModelSerializer):
 
 
 class CreateOrderSerializer(serializers.Serializer):
-    """Serializer for creating orders"""
+    """Serializer for creating orders with idempotency support"""
     shipping_address_id = serializers.UUIDField(required=True)
     billing_address_id = serializers.UUIDField(required=False)
     payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES, required=True)
     customer_notes = serializers.CharField(required=False, allow_blank=True)
     use_same_address_for_billing = serializers.BooleanField(default=False)
-    
+    idempotency_key = serializers.UUIDField(required=False)   # client-generated or fallback to cart.id
+
     def validate(self, data):
         """Validate order creation data"""
         user = self.context['request'].user
-        
+
         # Validate shipping address
         try:
             shipping_address = UserAddress.objects.get(
@@ -343,7 +365,7 @@ class CreateOrderSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'shipping_address_id': _("Invalid shipping address.")
             })
-        
+
         # Set billing address based on selection
         if data.get('use_same_address_for_billing'):
             billing_address = shipping_address
@@ -357,7 +379,7 @@ class CreateOrderSerializer(serializers.Serializer):
                 raise serializers.ValidationError({
                     'billing_address_id': _("Invalid billing address.")
                 })
-        
+
         # Get active cart
         try:
             cart = Cart.objects.get(user=user, is_active=True)
@@ -365,20 +387,20 @@ class CreateOrderSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'non_field_errors': _("No active cart found.")
             })
-        
+
         # Check if cart has items
         if not cart.items.exists():
             raise serializers.ValidationError({
                 'non_field_errors': _("Your cart is empty.")
             })
-        
+
         # Check if prescription is required and provided
         if cart.requires_prescription and not cart.prescription_file:
             raise serializers.ValidationError({
                 'non_field_errors': _("Prescription is required for some items in your cart.")
             })
-        
-        # Check if any item is out of stock (basic check without lock)
+
+        # Basic stock check (without lock – will be rechecked inside atomic block)
         for item in cart.items.all():
             variant = item.variant
             product = item.product
@@ -391,23 +413,49 @@ class CreateOrderSerializer(serializers.Serializer):
                 raise serializers.ValidationError({
                     'non_field_errors': _(f"موجودی کافی برای {product.name} وجود ندارد.")
                 })
-        
-        # Add validated objects to data
+        idempotency_key = self.context['request'].headers.get('Idempotency-Key')
+        if idempotency_key:
+            data['idempotency_key'] = idempotency_key
+
+        # Check if this cart already has an order (idempotency)
+        # This is an additional safety net
+        if cart.orders.exists():
+            raise serializers.ValidationError({
+                'non_field_errors': _("This cart has already been submitted.")
+            })
+
+        # Use provided idempotency key or fallback to cart id
+        if not data.get('idempotency_key'):
+            data['idempotency_key'] = cart.id
+
         data['cart'] = cart
         data['shipping_address'] = shipping_address
         data['billing_address'] = billing_address
-        
         return data
-    
+
     def create(self, validated_data):
-        """Create order from cart with stock locking"""
+        """Create order from cart with stock locking, order‑level and item‑level idempotency"""
         cart = validated_data['cart']
         user = self.context['request'].user
         shipping_address = validated_data['shipping_address']
         billing_address = validated_data['billing_address']
         payment_method = validated_data['payment_method']
         customer_notes = validated_data.get('customer_notes', '')
-        
+        idempotency_key = validated_data['idempotency_key']
+
+        # Build cache key for the whole order
+        cache_key = IdempotencyHelper.generate_key('order', idempotency_key)
+
+        # 1. Outer idempotency: check if this order already succeeded
+        cached = cache.get(cache_key)
+        if cached:
+            try:
+                existing_order = Order.objects.get(id=cached['order_id'])
+                if existing_order.user == user and existing_order.status != Order.STATUS_CANCELLED:
+                    return existing_order
+            except Order.DoesNotExist:
+                pass
+
         with transaction.atomic():
             # Lock product/variant rows to prevent race conditions
             product_ids = []
@@ -417,17 +465,23 @@ class CreateOrderSerializer(serializers.Serializer):
                     variant_ids.append(item.variant.id)
                 else:
                     product_ids.append(item.product.id)
-            
+
             if product_ids:
                 Product.objects.select_for_update().filter(id__in=product_ids)
             if variant_ids:
                 ProductVariant.objects.select_for_update().filter(id__in=variant_ids)
-            
-            # Double-check stock after locking (in case of changes during the request)
+
+            # Double-check stock and max order quantity after locking
             for item in cart.items.all():
                 variant = item.variant
                 product = item.product
                 required = item.quantity
+
+                if product.max_order_quantity > 0 and required > product.max_order_quantity:
+                    raise serializers.ValidationError(
+                        f"حداکثر تعداد قابل سفارش برای {product.name} {product.max_order_quantity} عدد است."
+                    )
+
                 if variant and variant.track_inventory and variant.stock_quantity < required:
                     raise serializers.ValidationError(
                         f"موجودی کافی برای {variant.name} وجود ندارد."
@@ -436,8 +490,8 @@ class CreateOrderSerializer(serializers.Serializer):
                     raise serializers.ValidationError(
                         f"موجودی کافی برای {product.name} وجود ندارد."
                     )
-            
-            # Create order
+
+            # Create order (without items yet)
             order = Order.objects.create(
                 user=user,
                 status=Order.STATUS_PENDING,
@@ -451,13 +505,13 @@ class CreateOrderSerializer(serializers.Serializer):
                 prescription_file=cart.prescription_file,
                 prescription_verified=cart.prescription_verified
             )
-            
-            # Add coupon info if applied
+
+            # Apply coupon if present
             if cart.coupon:
                 order.coupon_code = cart.coupon.code
                 order.coupon_discount = cart.discount_amount
                 order.save(update_fields=['coupon_code', 'coupon_discount'])
-                
+
                 from promotions.models import CouponUsage
                 CouponUsage.objects.create(
                     coupon=cart.coupon,
@@ -467,14 +521,23 @@ class CreateOrderSerializer(serializers.Serializer):
                 )
                 cart.coupon.used_count += 1
                 cart.coupon.save(update_fields=['used_count'])
-            
-            # Create order items from cart items
+
+            # 2. Item‑level idempotency: process each cart item with its own cache key
+            processed_item_keys = []
+
             for cart_item in cart.items.all():
+                item_key = IdempotencyHelper.generate_key('reserve', cart_item.id)
+
+                # Skip if this cart item was already processed in a previous successful order
+                if cache.get(item_key):
+                    continue
+
+                # Determine unit price
                 if cart_item.variant:
                     unit_price = cart_item.variant.calculated_price
                 else:
                     unit_price = cart_item.product.price
-                
+
                 OrderItem.objects.create(
                     order=order,
                     product=cart_item.product,
@@ -488,7 +551,7 @@ class CreateOrderSerializer(serializers.Serializer):
                     total_price=unit_price * cart_item.quantity,
                     requires_prescription=cart_item.product.prescription_required == 'required'
                 )
-                
+
                 # Reduce inventory
                 if cart_item.product.track_inventory:
                     if cart_item.variant:
@@ -497,12 +560,25 @@ class CreateOrderSerializer(serializers.Serializer):
                     else:
                         cart_item.product.stock_quantity -= cart_item.quantity
                         cart_item.product.save(update_fields=['stock_quantity'])
-            
+
+                processed_item_keys.append(item_key)
+
             # Deactivate cart
             cart.is_active = False
             cart.save(update_fields=['is_active'])
-            
+
+            # After successful commit, store both order‑level and item‑level caches
+            def cache_after_commit():
+                # Order cache (48 hours)
+                cache.set(cache_key, {'order_id': str(order.id), 'status': 'completed'}, timeout=60*60*48)
+                # Item caches (15 minutes – enough to cover any retry window)
+                for item_key in processed_item_keys:
+                    cache.set(item_key, {'processed': True}, timeout=60*15)
+
+            transaction.on_commit(cache_after_commit)
+
             return order
+
     def _address_to_json(self, address):
         """Convert address model to JSON representation"""
         return {
